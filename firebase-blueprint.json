@@ -1,0 +1,665 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered user profile with verification, approval status, role, and assigned companies.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Full display name of the user."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 150,
+          "description": "Verified email address of the user."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"],
+          "description": "Approval status controlled by admin."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "entry", "viewer"],
+          "description": "Access role of the user."
+        },
+        "companies": {
+          "type": "array",
+          "description": "List of factory/company names assigned for data entry."
+        },
+        "viewCompanies": {
+          "type": "array",
+          "description": "List of factory/company names allowed for viewing dashboard and ledger data."
+        },
+        "allowedUtilities": {
+          "type": "array",
+          "description": "Optional list of utility IDs visible to this user (empty/omitted = all utilities)."
+        },
+        "organization": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Primary company or organization the user belongs to."
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Department within the organization."
+        },
+        "designation": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Job title or designation."
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Contact phone number (private PII, never synced to userDirectory)."
+        },
+        "employeeId": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Optional employee ID code."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was created."
+        }
+      },
+      "required": ["name", "email", "status", "role", "companies", "createdAt"]
+    },
+    "UserDirectory": {
+      "title": "UserDirectory",
+      "description": "Non-PII organizational user directory entry visible to approved admins and viewers.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Full display name."
+        },
+        "organization": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Company or organization the user belongs to."
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "User department."
+        },
+        "designation": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "User job title."
+        },
+        "employeeId": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Employee ID."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"],
+          "description": "Approval status."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "entry", "viewer"],
+          "description": "Access role."
+        },
+        "companies": {
+          "type": "array",
+          "description": "Entry factory assignments."
+        },
+        "viewCompanies": {
+          "type": "array",
+          "description": "View factory permissions."
+        },
+        "allowedUtilities": {
+          "type": "array",
+          "description": "Allowed utility IDs for dashboard/entry."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Original profile creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Latest directory sync timestamp."
+        }
+      },
+      "required": ["name", "status", "role", "companies", "createdAt", "updatedAt"]
+    },
+    "PublicCompanyList": {
+      "title": "PublicCompanyList",
+      "description": "Non-PII list of company names shown in the sign-up organization dropdown.",
+      "type": "object",
+      "properties": {
+        "names": {
+          "type": "array",
+          "description": "Ordered list of company names."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest sync."
+        }
+      },
+      "required": ["names", "updatedAt"]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Company entity managed by admins for utility and plant generation tracking.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Company display name."
+        },
+        "equipmentConfigured": {
+          "type": "boolean",
+          "description": "Whether admin has explicitly defined equipment and grid providers for this factory."
+        },
+        "boilerCount": {
+          "type": "number",
+          "description": "Number of boilers configured for this factory (0-50)."
+        },
+        "boilerFuelUnit": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Default fuel unit for boilers at this factory."
+        },
+        "dieselGeneratorCount": {
+          "type": "number",
+          "description": "Number of diesel generators configured for this factory (0-50)."
+        },
+        "gasGeneratorCount": {
+          "type": "number",
+          "description": "Number of gas generators configured for this factory (0-50)."
+        },
+        "solarCount": {
+          "type": "number",
+          "description": "Number of solar systems configured for this factory (0-50)."
+        },
+        "gridProviders": {
+          "type": "array",
+          "description": "List of grid electricity providers configured for this factory (e.g., PDB, DESCO, REB)."
+        },
+        "gridHasPeakOffPeak": {
+          "type": "boolean",
+          "description": "Whether this factory tracks separate Peak and Off-Peak grid electricity tariffs."
+        },
+        "deviceConfigs": {
+          "type": "string",
+          "maxLength": 10000,
+          "description": "JSON configuration of individual named boilers, generators, and solar devices with fuel assignments."
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of admin who created the company."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["name", "createdBy", "createdAt"]
+    },
+    "Utility": {
+      "title": "Utility",
+      "description": "Utility type definition with unit and chart color.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Utility display name."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30,
+          "description": "Measurement unit (e.g., kWh, m³, Liters)."
+        },
+        "color": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7,
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "description": "Hex chart color."
+        },
+        "order": {
+          "type": "number",
+          "description": "Display sort order."
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of admin who created the utility."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["name", "unit", "color", "order", "createdBy", "createdAt"]
+    },
+    "UtilityEntry": {
+      "title": "UtilityEntry",
+      "description": "Daily utility consumption and cost record for a company and utility.",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Entry date in YYYY-MM-DD format."
+        },
+        "company": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Company name."
+        },
+        "utilityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Utility document ID."
+        },
+        "utilityName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Utility name snapshot."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30,
+          "description": "Utility unit snapshot."
+        },
+        "consumption": {
+          "type": "number",
+          "description": "Consumption quantity (>= 0)."
+        },
+        "cost": {
+          "type": "number",
+          "description": "Total cost in BDT (>= 0)."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional note."
+        },
+        "enteredBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of user who entered or last updated the record."
+        },
+        "enteredByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Display name of user who entered the record."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of initial creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": [
+        "date",
+        "company",
+        "utilityId",
+        "utilityName",
+        "unit",
+        "consumption",
+        "cost",
+        "note",
+        "enteredBy",
+        "enteredByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GoogleSheetsConfig": {
+      "title": "GoogleSheetsConfig",
+      "description": "Configuration for the connected Google Sheets spreadsheet and sync metadata.",
+      "type": "object",
+      "properties": {
+        "spreadsheetId": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Google Sheets spreadsheet ID."
+        },
+        "spreadsheetUrl": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 300,
+          "pattern": "^https://docs\\.google\\.com/spreadsheets/.*",
+          "description": "Full URL to the Google Sheet."
+        },
+        "spreadsheetTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150,
+          "description": "Title of the connected Google Sheet."
+        },
+        "sheetName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Target tab name inside the spreadsheet."
+        },
+        "syncMode": {
+          "type": "string",
+          "enum": ["oauth", "appsScript"],
+          "description": "Sync transport mode: OAuth Sheets API or Google Apps Script webhook."
+        },
+        "webhookUrl": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^$|^https://script\\.google\\.com/macros/s/[a-zA-Z0-9_\\-]+/exec$",
+          "description": "Deployed Google Apps Script Web App /exec URL when using auto-sync."
+        },
+        "lastSyncedCount": {
+          "type": "number",
+          "description": "Number of rows synced in the latest sync."
+        },
+        "lastSyncedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest sync."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of user who updated or synced."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last config update."
+        }
+      },
+      "required": [
+        "spreadsheetId",
+        "spreadsheetUrl",
+        "spreadsheetTitle",
+        "sheetName",
+        "lastSyncedCount",
+        "lastSyncedAt",
+        "updatedBy",
+        "updatedAt"
+      ]
+    },
+    "UserUnitRate": {
+      "title": "UserUnitRate",
+      "description": "Per-user saved default unit cost rate for a specific factory and utility.",
+      "type": "object",
+      "properties": {
+        "company": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Factory/company name."
+        },
+        "utilityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Utility document ID."
+        },
+        "unitCost": {
+          "type": "number",
+          "description": "Saved per-unit cost rate in BDT (>= 0)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": ["company", "utilityId", "unitCost", "updatedAt"]
+    },
+    "GenerationEntry": {
+      "title": "GenerationEntry",
+      "description": "Daily plant boiler steam, generator power, and solar electricity generation record per factory.",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Entry date in YYYY-MM-DD format."
+        },
+        "company": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Factory/company name."
+        },
+        "boilerCount": {
+          "type": "number",
+          "description": "Number of boilers operating at this factory (>= 0)."
+        },
+        "steamKg": {
+          "type": "number",
+          "description": "Total steam produced in kg (>= 0)."
+        },
+        "boilerFuelQty": {
+          "type": "number",
+          "description": "Fuel quantity consumed by boilers (>= 0)."
+        },
+        "boilerFuelUnit": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Unit for boiler fuel (e.g., m³, L, kg)."
+        },
+        "boilerFuelCost": {
+          "type": "number",
+          "description": "Total boiler fuel cost in BDT (>= 0)."
+        },
+        "generatorCount": {
+          "type": "number",
+          "description": "Number of generators operating at this factory (>= 0)."
+        },
+        "generatorKwh": {
+          "type": "number",
+          "description": "Total captive electricity produced in kWh (>= 0)."
+        },
+        "generatorFuelQty": {
+          "type": "number",
+          "description": "Fuel quantity consumed by generators (>= 0)."
+        },
+        "generatorFuelUnit": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Unit for generator fuel (e.g., m³, L, kg)."
+        },
+        "generatorFuelCost": {
+          "type": "number",
+          "description": "Total generator fuel cost in BDT (>= 0)."
+        },
+        "dieselGeneratorCount": {
+          "type": "number",
+          "description": "Number of diesel generators operating (>= 0)."
+        },
+        "dieselGenKwh": {
+          "type": "number",
+          "description": "Diesel generator electricity generated in kWh (>= 0)."
+        },
+        "dieselFuelQty": {
+          "type": "number",
+          "description": "Diesel fuel quantity consumed in L (>= 0)."
+        },
+        "dieselFuelCost": {
+          "type": "number",
+          "description": "Diesel generator fuel cost in BDT (>= 0)."
+        },
+        "gasGeneratorCount": {
+          "type": "number",
+          "description": "Number of gas generators operating (>= 0)."
+        },
+        "gasGenKwh": {
+          "type": "number",
+          "description": "Gas generator electricity generated in kWh (>= 0)."
+        },
+        "gasFuelQty": {
+          "type": "number",
+          "description": "Gas generator fuel quantity consumed in m³ (>= 0)."
+        },
+        "gasFuelCost": {
+          "type": "number",
+          "description": "Gas generator fuel cost in BDT (>= 0)."
+        },
+        "solarSystemCount": {
+          "type": "number",
+          "description": "Number of solar systems/inverters at this factory (>= 0)."
+        },
+        "solarKwh": {
+          "type": "number",
+          "description": "Total solar electricity generated in kWh (>= 0)."
+        },
+        "solarSavings": {
+          "type": "number",
+          "description": "Estimated electricity cost savings from solar generation in BDT (>= 0)."
+        },
+        "gridProviderBreakdown": {
+          "type": "string",
+          "maxLength": 2500,
+          "description": "JSON summary of PDB/DESCO/REB grid and Peak/Off-Peak readings."
+        },
+        "unitReadings": {
+          "type": "string",
+          "maxLength": 12000,
+          "description": "JSON summary of per-unit Boiler, Generator (including dual-fuel), and Solar readings with custom device names and per-unit fuel."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional note."
+        },
+        "enteredBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of user who entered or updated the record."
+        },
+        "enteredByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Display name of user who entered the record."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "date",
+        "company",
+        "boilerCount",
+        "steamKg",
+        "boilerFuelQty",
+        "boilerFuelUnit",
+        "boilerFuelCost",
+        "generatorCount",
+        "generatorKwh",
+        "generatorFuelQty",
+        "generatorFuelUnit",
+        "generatorFuelCost",
+        "solarSystemCount",
+        "solarKwh",
+        "solarSavings",
+        "note",
+        "enteredBy",
+        "enteredByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles containing role, approval status, and assigned companies."
+    },
+    "/companies/{companyId}": {
+      "schema": { "$ref": "#/entities/Company" },
+      "description": "List of companies in the group."
+    },
+    "/utilities/{utilityId}": {
+      "schema": { "$ref": "#/entities/Utility" },
+      "description": "List of configurable utility types with units and chart colors."
+    },
+    "/utilityEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/UtilityEntry" },
+      "description": "Daily utility consumption and cost entries."
+    },
+    "/generationEntries/{genId}": {
+      "schema": { "$ref": "#/entities/GenerationEntry" },
+      "description": "Daily plant boiler steam, generator power, and solar electricity generation logs."
+    },
+    "/integrations/{docId}": {
+      "schema": { "$ref": "#/entities/GoogleSheetsConfig" },
+      "description": "External integration settings such as Google Sheets target configuration."
+    },
+    "/users/{uid}/unitRates/{rateId}": {
+      "schema": { "$ref": "#/entities/UserUnitRate" },
+      "description": "Per-user saved default unit cost rates by factory and utility."
+    },
+    "/userDirectory/{uid}": {
+      "schema": { "$ref": "#/entities/UserDirectory" },
+      "description": "Non-PII team & organization directory readable by approved admins and viewers."
+    },
+    "/publicConfig/{docId}": {
+      "schema": { "$ref": "#/entities/PublicCompanyList" },
+      "description": "Non-PII company name list for unauthenticated sign-up selection."
+    }
+  }
+}

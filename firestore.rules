@@ -1,0 +1,611 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Functions ---
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email is string && request.auth.token.email.lower() == 'omargolamrabbany@gmail.com';
+    }
+
+    function userDocExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isApprovedUser() {
+      return isVerified() && userDocExists() && userDoc().status == 'approved';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (isApprovedUser() && userDoc().role == 'admin');
+    }
+
+    function canEnterForCompany(companyName) {
+      return isAdmin() || (
+        isApprovedUser()
+        && userDoc().role == 'entry'
+        && companyName is string
+        && companyName in userDoc().companies
+      );
+    }
+
+    function canViewCompany(companyName) {
+      return isAdmin() || (
+        isApprovedUser()
+        && companyName is string
+        && 'viewCompanies' in userDoc()
+        && companyName in userDoc().viewCompanies
+      );
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['name', 'email', 'status', 'role', 'companies', 'createdAt'])
+        && data.keys().hasOnly([
+          'name', 'email', 'status', 'role', 'companies', 'viewCompanies', 'allowedUtilities',
+          'organization', 'department', 'designation', 'phone', 'employeeId', 'createdAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 150
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.role in ['admin', 'entry', 'viewer']
+        && data.companies is list && data.companies.size() <= 50
+        && (data.companies.size() == 0 || data.companies[0] is string)
+        && (!('viewCompanies' in data) || (
+          data.viewCompanies is list
+          && data.viewCompanies.size() <= 50
+          && (data.viewCompanies.size() == 0 || data.viewCompanies[0] is string)
+        ))
+        && (!('allowedUtilities' in data) || (
+          data.allowedUtilities is list
+          && data.allowedUtilities.size() <= 50
+          && (data.allowedUtilities.size() == 0 || data.allowedUtilities[0] is string)
+        ))
+        && (!('organization' in data) || (data.organization is string && data.organization.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('designation' in data) || (data.designation is string && data.designation.size() <= 80))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
+        && (!('employeeId' in data) || (data.employeeId is string && data.employeeId.size() <= 40))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUserDirectory(data) {
+      return data.keys().hasAll(['name', 'status', 'role', 'companies', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'name', 'organization', 'department', 'designation', 'employeeId',
+          'status', 'role', 'companies', 'viewCompanies', 'allowedUtilities',
+          'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && (!('organization' in data) || (data.organization is string && data.organization.size() <= 100))
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && (!('designation' in data) || (data.designation is string && data.designation.size() <= 80))
+        && (!('employeeId' in data) || (data.employeeId is string && data.employeeId.size() <= 40))
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.role in ['admin', 'entry', 'viewer']
+        && data.companies is list && data.companies.size() <= 50
+        && (data.companies.size() == 0 || data.companies[0] is string)
+        && (!('viewCompanies' in data) || (
+          data.viewCompanies is list
+          && data.viewCompanies.size() <= 50
+          && (data.viewCompanies.size() == 0 || data.viewCompanies[0] is string)
+        ))
+        && (!('allowedUtilities' in data) || (
+          data.allowedUtilities is list
+          && data.allowedUtilities.size() <= 50
+          && (data.allowedUtilities.size() == 0 || data.allowedUtilities[0] is string)
+        ))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPublicCompanyList(data) {
+      return data.keys().hasAll(['names', 'updatedAt'])
+        && data.keys().hasOnly(['names', 'updatedAt'])
+        && data.names is list
+        && data.names.size() <= 100
+        && (data.names.size() == 0 || (data.names[0] is string && data.names[0].size() <= 100))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCompany(data) {
+      return data.keys().hasAll(['name', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly([
+          'name', 'createdBy', 'createdAt',
+          'equipmentConfigured', 'boilerCount', 'boilerFuelUnit',
+          'dieselGeneratorCount', 'gasGeneratorCount', 'solarCount', 'gridProviders', 'gridHasPeakOffPeak', 'deviceConfigs'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && (!('equipmentConfigured' in data) || data.equipmentConfigured is bool)
+        && (!('boilerCount' in data) || ((data.boilerCount is int || data.boilerCount is float) && data.boilerCount >= 0 && data.boilerCount <= 50))
+        && (!('boilerFuelUnit' in data) || (data.boilerFuelUnit is string && data.boilerFuelUnit.size() <= 30))
+        && (!('dieselGeneratorCount' in data) || ((data.dieselGeneratorCount is int || data.dieselGeneratorCount is float) && data.dieselGeneratorCount >= 0 && data.dieselGeneratorCount <= 50))
+        && (!('gasGeneratorCount' in data) || ((data.gasGeneratorCount is int || data.gasGeneratorCount is float) && data.gasGeneratorCount >= 0 && data.gasGeneratorCount <= 50))
+        && (!('solarCount' in data) || ((data.solarCount is int || data.solarCount is float) && data.solarCount >= 0 && data.solarCount <= 50))
+        && (!('gridProviders' in data) || (
+          data.gridProviders is list
+          && data.gridProviders.size() <= 10
+          && (data.gridProviders.size() == 0 || (data.gridProviders[0] is string && data.gridProviders[0].size() <= 30))
+        ))
+        && (!('gridHasPeakOffPeak' in data) || data.gridHasPeakOffPeak is bool)
+        && (!('deviceConfigs' in data) || (data.deviceConfigs is string && data.deviceConfigs.size() <= 10000))
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUtility(data) {
+      return data.keys().hasAll(['name', 'unit', 'color', 'order', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['name', 'unit', 'color', 'order', 'createdBy', 'createdAt'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30
+        && data.color is string && data.color.size() == 7 && data.color.matches('^#[0-9A-Fa-f]{6}$')
+        && (data.order is int || data.order is float) && data.order >= 0 && data.order <= 1000
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUtilityEntry(data) {
+      return data.keys().hasAll(['date', 'company', 'utilityId', 'utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['date', 'company', 'utilityId', 'utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'])
+        && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.company is string && data.company.size() >= 1 && data.company.size() <= 100
+        && isValidId(data.utilityId)
+        && data.utilityName is string && data.utilityName.size() >= 1 && data.utilityName.size() <= 80
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30
+        && (data.consumption is int || data.consumption is float) && data.consumption >= 0 && data.consumption <= 1000000000
+        && (data.cost is int || data.cost is float) && data.cost >= 0 && data.cost <= 100000000000
+        && data.note is string && data.note.size() <= 300
+        && isValidId(data.enteredBy)
+        && data.enteredByName is string && data.enteredByName.size() >= 1 && data.enteredByName.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGoogleSheetsConfig(data) {
+      return data.keys().hasAll(['spreadsheetId', 'spreadsheetUrl', 'spreadsheetTitle', 'sheetName', 'lastSyncedCount', 'lastSyncedAt', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['spreadsheetId', 'spreadsheetUrl', 'spreadsheetTitle', 'sheetName', 'lastSyncedCount', 'lastSyncedAt', 'updatedBy', 'updatedAt', 'syncMode', 'webhookUrl'])
+        && (!('syncMode' in data) || data.syncMode in ['oauth', 'appsScript'])
+        && (!('webhookUrl' in data) || (data.webhookUrl is string && data.webhookUrl.size() <= 300 && (data.webhookUrl == '' || data.webhookUrl.matches('^https://script\\.google\\.com/macros/s/[a-zA-Z0-9_\\-]+/exec$'))))
+        && data.spreadsheetId is string && data.spreadsheetId.size() >= 5 && data.spreadsheetId.size() <= 128 && data.spreadsheetId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.spreadsheetUrl is string && data.spreadsheetUrl.size() <= 300 && (
+          data.spreadsheetUrl.matches('^https://docs\\.google\\.com/spreadsheets/.*')
+          || (data.get('syncMode', 'oauth') == 'appsScript' && data.spreadsheetUrl == '')
+        )
+        && data.spreadsheetTitle is string && data.spreadsheetTitle.size() >= 1 && data.spreadsheetTitle.size() <= 150
+        && data.sheetName is string && data.sheetName.size() >= 1 && data.sheetName.size() <= 100
+        && (data.lastSyncedCount is int || data.lastSyncedCount is float) && data.lastSyncedCount >= 0 && data.lastSyncedCount <= 1000000
+        && data.lastSyncedAt is timestamp
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserUnitRate(data) {
+      return data.keys().hasAll(['company', 'utilityId', 'unitCost', 'updatedAt'])
+        && data.keys().hasOnly(['company', 'utilityId', 'unitCost', 'updatedAt'])
+        && data.company is string && data.company.size() >= 1 && data.company.size() <= 100
+        && isValidId(data.utilityId)
+        && (data.unitCost is int || data.unitCost is float) && data.unitCost >= 0 && data.unitCost <= 10000000
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGenerationEntry(data) {
+      return data.keys().hasAll([
+          'date', 'company',
+          'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost',
+          'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost',
+          'solarSystemCount', 'solarKwh', 'solarSavings',
+          'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'date', 'company',
+          'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost',
+          'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost',
+          'dieselGeneratorCount', 'dieselGenKwh', 'dieselFuelQty', 'dieselFuelCost',
+          'gasGeneratorCount', 'gasGenKwh', 'gasFuelQty', 'gasFuelCost',
+          'solarSystemCount', 'solarKwh', 'solarSavings',
+          'gridProviderBreakdown', 'unitReadings',
+          'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'
+        ])
+        && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.company is string && data.company.size() >= 1 && data.company.size() <= 100
+        && (data.boilerCount is int || data.boilerCount is float) && data.boilerCount >= 0 && data.boilerCount <= 500
+        && (data.steamKg is int || data.steamKg is float) && data.steamKg >= 0 && data.steamKg <= 1000000000
+        && (data.boilerFuelQty is int || data.boilerFuelQty is float) && data.boilerFuelQty >= 0 && data.boilerFuelQty <= 1000000000
+        && data.boilerFuelUnit is string && data.boilerFuelUnit.size() <= 30
+        && (data.boilerFuelCost is int || data.boilerFuelCost is float) && data.boilerFuelCost >= 0 && data.boilerFuelCost <= 100000000000
+        && (data.generatorCount is int || data.generatorCount is float) && data.generatorCount >= 0 && data.generatorCount <= 500
+        && (data.generatorKwh is int || data.generatorKwh is float) && data.generatorKwh >= 0 && data.generatorKwh <= 1000000000
+        && (data.generatorFuelQty is int || data.generatorFuelQty is float) && data.generatorFuelQty >= 0 && data.generatorFuelQty <= 1000000000
+        && data.generatorFuelUnit is string && data.generatorFuelUnit.size() <= 30
+        && (data.generatorFuelCost is int || data.generatorFuelCost is float) && data.generatorFuelCost >= 0 && data.generatorFuelCost <= 100000000000
+        && (!('dieselGeneratorCount' in data) || ((data.dieselGeneratorCount is int || data.dieselGeneratorCount is float) && data.dieselGeneratorCount >= 0 && data.dieselGeneratorCount <= 500))
+        && (!('dieselGenKwh' in data) || ((data.dieselGenKwh is int || data.dieselGenKwh is float) && data.dieselGenKwh >= 0 && data.dieselGenKwh <= 1000000000))
+        && (!('dieselFuelQty' in data) || ((data.dieselFuelQty is int || data.dieselFuelQty is float) && data.dieselFuelQty >= 0 && data.dieselFuelQty <= 1000000000))
+        && (!('dieselFuelCost' in data) || ((data.dieselFuelCost is int || data.dieselFuelCost is float) && data.dieselFuelCost >= 0 && data.dieselFuelCost <= 100000000000))
+        && (!('gasGeneratorCount' in data) || ((data.gasGeneratorCount is int || data.gasGeneratorCount is float) && data.gasGeneratorCount >= 0 && data.gasGeneratorCount <= 500))
+        && (!('gasGenKwh' in data) || ((data.gasGenKwh is int || data.gasGenKwh is float) && data.gasGenKwh >= 0 && data.gasGenKwh <= 1000000000))
+        && (!('gasFuelQty' in data) || ((data.gasFuelQty is int || data.gasFuelQty is float) && data.gasFuelQty >= 0 && data.gasFuelQty <= 1000000000))
+        && (!('gasFuelCost' in data) || ((data.gasFuelCost is int || data.gasFuelCost is float) && data.gasFuelCost >= 0 && data.gasFuelCost <= 100000000000))
+        && (data.solarSystemCount is int || data.solarSystemCount is float) && data.solarSystemCount >= 0 && data.solarSystemCount <= 500
+        && (data.solarKwh is int || data.solarKwh is float) && data.solarKwh >= 0 && data.solarKwh <= 1000000000
+        && (data.solarSavings is int || data.solarSavings is float) && data.solarSavings >= 0 && data.solarSavings <= 100000000000
+        && (!('gridProviderBreakdown' in data) || (data.gridProviderBreakdown is string && data.gridProviderBreakdown.size() <= 2500))
+        && (!('unitReadings' in data) || (data.unitReadings is string && data.unitReadings.size() <= 12000))
+        && data.note is string && data.note.size() <= 300
+        && isValidId(data.enteredBy)
+        && data.enteredByName is string && data.enteredByName.size() >= 1 && data.enteredByName.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isVerified()
+        && isValidId(uid)
+        && isOwner(uid)
+        && isValidUser(incoming())
+        && incoming().email == request.auth.token.email
+        && incoming().createdAt == request.time
+        && (!('viewCompanies' in incoming()) || incoming().viewCompanies.size() == 0)
+        && (!('allowedUtilities' in incoming()) || incoming().allowedUtilities.size() == 0)
+        && (
+          (isBootstrappedAdmin() && incoming().role == 'admin' && incoming().status == 'approved')
+          || (!isBootstrappedAdmin() && incoming().role == 'viewer' && incoming().status == 'pending' && incoming().companies.size() == 0)
+        );
+
+      allow update: if isVerified()
+        && isValidId(uid)
+        && isValidUser(incoming())
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && (
+          (isAdmin() && !isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'role', 'companies', 'viewCompanies', 'allowedUtilities',
+            'name', 'organization', 'department', 'designation', 'phone', 'employeeId'
+          ]))
+          ||
+          (isAdmin() && isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'companies', 'viewCompanies', 'allowedUtilities',
+            'organization', 'department', 'designation', 'phone', 'employeeId'
+          ]))
+          ||
+          (isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'organization', 'department', 'designation', 'phone', 'employeeId'
+          ]))
+        );
+
+      allow delete: if false;
+
+      match /unitRates/{rateId} {
+        allow get: if isSignedIn() && isValidId(uid) && isValidId(rateId) && (isOwner(uid) || isAdmin());
+        allow list: if isSignedIn() && isValidId(uid) && (isOwner(uid) || isAdmin());
+
+        allow create: if isVerified()
+          && isApprovedUser()
+          && isValidId(uid)
+          && isValidId(rateId)
+          && isOwner(uid)
+          && isValidUserUnitRate(incoming())
+          && incoming().updatedAt == request.time;
+
+        allow update: if isVerified()
+          && isApprovedUser()
+          && isValidId(uid)
+          && isValidId(rateId)
+          && isValidUserUnitRate(incoming())
+          && incoming().utilityId == existing().utilityId
+          && incoming().updatedAt == request.time
+          && (
+            (isOwner(uid) && incoming().company == existing().company && incoming().diff(existing()).affectedKeys().hasOnly(['unitCost', 'updatedAt']))
+            || (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['company', 'updatedAt']))
+          );
+
+        allow delete: if isVerified()
+          && isApprovedUser()
+          && isValidId(uid)
+          && isValidId(rateId)
+          && (isOwner(uid) || isAdmin());
+      }
+    }
+
+    match /userDirectory/{uid} {
+      allow get: if isValidId(uid) && isVerified() && (
+        isOwner(uid)
+        || isAdmin()
+        || (isApprovedUser() && userDoc().role == 'viewer')
+      );
+      allow list: if isApprovedUser() && (
+        isAdmin()
+        || (userDoc().role == 'viewer' && resource.data.status in ['approved', 'pending', 'rejected'])
+      );
+
+      allow create: if isVerified()
+        && isValidId(uid)
+        && isValidUserDirectory(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isOwner(uid)
+            && userDocExists()
+            && incoming().role == userDoc().role
+            && incoming().status == userDoc().status
+            && incoming().companies == userDoc().companies
+            && incoming().get('viewCompanies', []) == userDoc().get('viewCompanies', [])
+            && incoming().get('allowedUtilities', []) == userDoc().get('allowedUtilities', [])
+            && incoming().createdAt == userDoc().createdAt
+          )
+          ||
+          (
+            isOwner(uid)
+            && !userDocExists()
+            && incoming().createdAt == request.time
+            && (!('viewCompanies' in incoming()) || incoming().viewCompanies.size() == 0)
+            && (!('allowedUtilities' in incoming()) || incoming().allowedUtilities.size() == 0)
+            && (
+              (isBootstrappedAdmin() && incoming().role == 'admin' && incoming().status == 'approved')
+              || (!isBootstrappedAdmin() && incoming().role == 'viewer' && incoming().status == 'pending' && incoming().companies.size() == 0)
+            )
+          )
+          || isAdmin()
+        );
+
+      allow update: if isVerified()
+        && isValidId(uid)
+        && isValidUserDirectory(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && !isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'role', 'companies', 'viewCompanies', 'allowedUtilities',
+            'name', 'organization', 'department', 'designation', 'employeeId', 'updatedAt'
+          ]))
+          ||
+          (isAdmin() && isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'companies', 'viewCompanies', 'allowedUtilities',
+            'organization', 'department', 'designation', 'employeeId', 'updatedAt'
+          ]))
+          ||
+          (isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'organization', 'department', 'designation', 'employeeId', 'updatedAt'
+          ]))
+        );
+
+      allow delete: if false;
+    }
+
+    match /publicConfig/{docId} {
+      allow get: if docId == 'companies';
+      allow list: if false;
+
+      allow create, update: if isAdmin()
+        && docId == 'companies'
+        && isValidPublicCompanyList(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow delete: if isAdmin() && docId == 'companies';
+    }
+
+    match /companies/{companyId} {
+      allow get: if isValidId(companyId) && isApprovedUser();
+      allow list: if isApprovedUser();
+
+      allow create: if isAdmin()
+        && isValidId(companyId)
+        && isValidCompany(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time;
+
+      allow update: if isValidId(companyId)
+        && isValidCompany(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && (
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'equipmentConfigured', 'boilerCount', 'boilerFuelUnit',
+              'dieselGeneratorCount', 'gasGeneratorCount', 'solarCount',
+              'gridProviders', 'gridHasPeakOffPeak', 'deviceConfigs'
+            ])
+          )
+          ||
+          (
+            isApprovedUser()
+            && userDoc().role == 'entry'
+            && existing().name in userDoc().companies
+            && incoming().name == existing().name
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'equipmentConfigured', 'boilerCount', 'boilerFuelUnit',
+              'dieselGeneratorCount', 'gasGeneratorCount', 'solarCount',
+              'gridProviders', 'gridHasPeakOffPeak', 'deviceConfigs'
+            ])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(companyId);
+    }
+
+    match /utilities/{utilityId} {
+      allow get: if isValidId(utilityId) && isApprovedUser();
+      allow list: if isApprovedUser();
+
+      allow create: if isAdmin()
+        && isValidId(utilityId)
+        && isValidUtility(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(utilityId)
+        && isValidUtility(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'unit', 'color', 'order']);
+
+      allow delete: if isAdmin() && isValidId(utilityId);
+    }
+
+    match /utilityEntries/{entryId} {
+      allow get: if isValidId(entryId) && (
+        (resource == null && isApprovedUser())
+        || (resource != null && (canViewCompany(existing().company) || canEnterForCompany(existing().company)))
+      );
+      allow list: if isApprovedUser() && (
+        isAdmin()
+        || ('viewCompanies' in userDoc() && resource.data.company in userDoc().viewCompanies)
+      );
+
+      allow create: if isVerified()
+        && isValidId(entryId)
+        && isValidUtilityEntry(incoming())
+        && incoming().enteredBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/utilities/$(incoming().utilityId))
+        && canEnterForCompany(incoming().company);
+
+      allow update: if isVerified()
+        && isValidId(entryId)
+        && isValidUtilityEntry(incoming())
+        && incoming().date == existing().date
+        && incoming().utilityId == existing().utilityId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            incoming().company == existing().company
+            && incoming().enteredBy == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'updatedAt'])
+            && canEnterForCompany(existing().company)
+          )
+          ||
+          (
+            isAdmin()
+            && (incoming().enteredBy == existing().enteredBy || incoming().enteredBy == request.auth.uid)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['company', 'utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isVerified()
+        && isValidId(entryId)
+        && canEnterForCompany(existing().company);
+    }
+
+    match /generationEntries/{genId} {
+      allow get: if isValidId(genId) && (
+        (resource == null && isApprovedUser())
+        || (resource != null && (canViewCompany(existing().company) || canEnterForCompany(existing().company)))
+      );
+      allow list: if isApprovedUser() && (
+        isAdmin()
+        || ('viewCompanies' in userDoc() && resource.data.company in userDoc().viewCompanies)
+      );
+
+      allow create: if isVerified()
+        && isValidId(genId)
+        && isValidGenerationEntry(incoming())
+        && incoming().enteredBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && canEnterForCompany(incoming().company);
+
+      allow update: if isVerified()
+        && isValidId(genId)
+        && isValidGenerationEntry(incoming())
+        && incoming().date == existing().date
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            incoming().company == existing().company
+            && incoming().enteredBy == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost',
+              'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost',
+              'dieselGeneratorCount', 'dieselGenKwh', 'dieselFuelQty', 'dieselFuelCost',
+              'gasGeneratorCount', 'gasGenKwh', 'gasFuelQty', 'gasFuelCost',
+              'solarSystemCount', 'solarKwh', 'solarSavings',
+              'gridProviderBreakdown', 'unitReadings',
+              'note', 'enteredBy', 'enteredByName', 'updatedAt'
+            ])
+            && canEnterForCompany(existing().company)
+          )
+          ||
+          (
+            isAdmin()
+            && (incoming().enteredBy == existing().enteredBy || incoming().enteredBy == request.auth.uid)
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'company',
+              'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost',
+              'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost',
+              'dieselGeneratorCount', 'dieselGenKwh', 'dieselFuelQty', 'dieselFuelCost',
+              'gasGeneratorCount', 'gasGenKwh', 'gasFuelQty', 'gasFuelCost',
+              'solarSystemCount', 'solarKwh', 'solarSavings',
+              'gridProviderBreakdown', 'unitReadings',
+              'note', 'enteredBy', 'enteredByName', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerified()
+        && isValidId(genId)
+        && canEnterForCompany(existing().company);
+    }
+
+    match /integrations/{docId} {
+      allow get: if isValidId(docId) && isAdmin();
+      allow list: if false;
+
+      allow create: if isAdmin()
+        && docId == 'googleSheets'
+        && isValidGoogleSheetsConfig(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && docId == 'googleSheets'
+        && isValidGoogleSheetsConfig(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+
+      allow delete: if isAdmin() && docId == 'googleSheets';
+    }
+  }
+}
