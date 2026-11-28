@@ -1,10 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'motion/react';
 import {
   AlertCircle,
+  AlertTriangle,
   Calendar,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Copy,
   Edit3,
   Eye,
@@ -12,11 +15,11 @@ import {
   FileSpreadsheet,
   Flame,
   Fuel,
+  Info,
   KeyRound,
   Lock,
   RotateCcw,
   Save,
-  SlidersHorizontal,
   Sun,
   Trash2,
   Unlock,
@@ -71,12 +74,13 @@ import {
   shiftDaysISO,
   toSafeFirestoreId,
 } from '../utils/formatters';
-import { CompanyEquipmentEditor } from './CompanyEquipmentEditor';
 import { GoogleSheetsSyncModal } from './GoogleSheetsSyncModal';
+import { evaluateUtilityDraftHints } from '../utils/analyticsValidation';
 
 interface RowDraft {
   unitCost: string;
   consumption: string;
+  operatingHours: string;
   cost: string;
   note: string;
 }
@@ -84,6 +88,7 @@ interface RowDraft {
 interface GridDraftRow {
   unitCost: string;
   kwh: string;
+  operatingHours: string;
   cost: string;
 }
 
@@ -101,6 +106,7 @@ interface BoilerUnitDraft {
   fuelMode: DeviceFuelMode;
   primaryFuelMode?: SingleDeviceFuelMode;
   secondaryFuelMode?: SingleDeviceFuelMode;
+  operatingHours: string;
   steamKg: string;
   fuelQty: string;
   fuelUnit: string;
@@ -118,6 +124,7 @@ interface GenUnitDraft {
   fuelMode: DeviceFuelMode;
   primaryFuelMode?: SingleDeviceFuelMode;
   secondaryFuelMode?: SingleDeviceFuelMode;
+  operatingHours: string;
   kwh: string;
   fuelQty: string;
   fuelUnit: string;
@@ -132,6 +139,7 @@ interface GenUnitDraft {
 interface SolarUnitDraft {
   deviceId: string;
   deviceName: string;
+  operatingHours: string;
   kwh: string;
   unitCost: string;
   savings: string;
@@ -277,6 +285,7 @@ export function DailyEntryPage() {
     googleAccessToken,
     connectGoogleSheets,
     syncEntriesToConnectedSheet,
+    runTwoWaySyncNow,
   } = useApp();
 
   const todayISO = getTodayISO();
@@ -296,7 +305,6 @@ export function DailyEntryPage() {
   const [selectedDate, setSelectedDate] = useState<string>(todayISO);
   const [selectedCompany, setSelectedCompany] = useState<string>('');
   const [showCalendar, setShowCalendar] = useState(false);
-  const [showEquipEditor, setShowEquipEditor] = useState(false);
 
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
   const [gridDrafts, setGridDrafts] = useState<Record<string, GridDraftRow>>({});
@@ -556,6 +564,8 @@ export function DailyEntryPage() {
         return {
           unitCost: derivedRate,
           consumption: String(existing.consumption),
+          operatingHours:
+            (existing.operatingHours ?? 0) > 0 ? String(existing.operatingHours) : '',
           cost: String(existing.cost),
           note: existing.note,
         };
@@ -564,6 +574,7 @@ export function DailyEntryPage() {
       return {
         unitCost: savedRate !== undefined ? formatCalcValue(savedRate.unitCost, 4) : '',
         consumption: '',
+        operatingHours: '',
         cost: '',
         note: '',
       };
@@ -620,6 +631,8 @@ export function DailyEntryPage() {
         next[slot.key] = {
           unitCost: defaultRateStr,
           kwh: existingRow.kwh > 0 ? String(existingRow.kwh) : '',
+          operatingHours:
+            (existingRow.operatingHours ?? 0) > 0 ? String(existingRow.operatingHours) : '',
           cost: existingRow.cost > 0 ? String(existingRow.cost) : '',
         };
       } else if (
@@ -635,12 +648,15 @@ export function DailyEntryPage() {
         next[slot.key] = {
           unitCost: rateStr,
           kwh: elec.consumption > 0 ? String(elec.consumption) : '',
+          operatingHours:
+            (elec.operatingHours ?? 0) > 0 ? String(elec.operatingHours) : '',
           cost: elec.cost > 0 ? String(elec.cost) : '',
         };
       } else {
         next[slot.key] = {
           unitCost: defaultRateStr,
           kwh: '',
+          operatingHours: '',
           cost: '',
         };
       }
@@ -767,6 +783,8 @@ export function DailyEntryPage() {
         ...(device.fuelMode === 'dual'
           ? { primaryFuelMode: pMode, secondaryFuelMode: sMode }
           : {}),
+        operatingHours:
+          (detail?.operatingHours ?? 0) > 0 ? String(detail?.operatingHours) : '',
         steamKg: steamVal > 0 ? String(steamVal) : '',
         fuelQty: fQty > 0 ? String(fQty) : '',
         fuelUnit: fUnit,
@@ -945,6 +963,8 @@ export function DailyEntryPage() {
         ...(device.fuelMode === 'dual'
           ? { primaryFuelMode: pMode, secondaryFuelMode: sMode }
           : {}),
+        operatingHours:
+          (detail?.operatingHours ?? 0) > 0 ? String(detail?.operatingHours) : '',
         kwh: kwhVal > 0 ? String(kwhVal) : '',
         fuelQty: fQty > 0 ? String(fQty) : '',
         fuelUnit: fUnit,
@@ -1009,6 +1029,8 @@ export function DailyEntryPage() {
       return {
         deviceId: device.id,
         deviceName: device.name,
+        operatingHours:
+          (detail?.operatingHours ?? 0) > 0 ? String(detail?.operatingHours) : '',
         kwh: kwhVal > 0 ? String(kwhVal) : '',
         unitCost: solarRateStr,
         savings: savVal > 0 ? String(savVal) : '',
@@ -1101,6 +1123,7 @@ export function DailyEntryPage() {
   const gridTotals = useMemo(() => {
     let totalKwh = 0;
     let totalCost = 0;
+    let totalHours = 0;
     let peakKwh = 0;
     let peakCost = 0;
     let offPeakKwh = 0;
@@ -1111,8 +1134,10 @@ export function DailyEntryPage() {
       if (!row) continue;
       const k = Number(row.kwh) || 0;
       const c = Number(row.cost) || 0;
+      const h = Number(row.operatingHours) || 0;
       if (k > 0) totalKwh += k;
       if (c > 0) totalCost += c;
+      if (h > 0) totalHours += h;
       if (slot.tariff === 'peak') {
         if (k > 0) peakKwh += k;
         if (c > 0) peakCost += c;
@@ -1121,7 +1146,15 @@ export function DailyEntryPage() {
         if (c > 0) offPeakCost += c;
       }
     }
-    return { totalKwh, totalCost, peakKwh, peakCost, offPeakKwh, offPeakCost };
+    return {
+      totalKwh,
+      totalCost,
+      totalHours: Math.min(24, totalHours),
+      peakKwh,
+      peakCost,
+      offPeakKwh,
+      offPeakCost,
+    };
   }, [gridSlots, gridDrafts]);
 
   const activeElectricityRate = useMemo(() => {
@@ -1168,16 +1201,19 @@ export function DailyEntryPage() {
     let combinedSteamKg = 0;
     let combinedBoilerFuelQty = 0;
     let combinedBoilerFuelCost = 0;
+    let combinedBoilerHours = 0;
     const boilerFuelBreakdown = new Map<string, number>();
 
     for (const b of genDraft.boilers) {
       const s = Number(b.steamKg) || 0;
+      const h = Number(b.operatingHours) || 0;
       const q = Number(b.fuelQty) || 0;
       const c = Number(b.fuelCost) || 0;
       const sq = b.fuelMode === 'dual' ? Number(b.secondaryFuelQty) || 0 : 0;
       const sc = b.fuelMode === 'dual' ? Number(b.secondaryFuelCost) || 0 : 0;
 
       if (s > 0) combinedSteamKg += s;
+      if (h > 0) combinedBoilerHours += h;
       if (q > 0) {
         combinedBoilerFuelQty += q;
         boilerFuelBreakdown.set(
@@ -1203,15 +1239,18 @@ export function DailyEntryPage() {
     let gasFuelCost = 0;
     let combinedGenKwh = 0;
     let combinedGenFuelCost = 0;
+    let combinedGenHours = 0;
 
     for (const g of genDraft.generators) {
       const k = Number(g.kwh) || 0;
+      const h = Number(g.operatingHours) || 0;
       const q = Number(g.fuelQty) || 0;
       const c = Number(g.fuelCost) || 0;
       const sq = g.fuelMode === 'dual' ? Number(g.secondaryFuelQty) || 0 : 0;
       const sc = g.fuelMode === 'dual' ? Number(g.secondaryFuelCost) || 0 : 0;
 
       if (k > 0) combinedGenKwh += k;
+      if (h > 0) combinedGenHours += h;
       if (c > 0) combinedGenFuelCost += c;
       if (sc > 0) combinedGenFuelCost += sc;
 
@@ -1243,10 +1282,13 @@ export function DailyEntryPage() {
 
     let combinedSolarKwh = 0;
     let combinedSolarSavings = 0;
+    let combinedSolarHours = 0;
     for (const s of genDraft.solarUnits) {
       const k = Number(s.kwh) || 0;
+      const h = Number(s.operatingHours) || 0;
       const sav = Number(s.savings) || 0;
       if (k > 0) combinedSolarKwh += k;
+      if (h > 0) combinedSolarHours += h;
       if (sav > 0) combinedSolarSavings += sav;
     }
 
@@ -1258,6 +1300,7 @@ export function DailyEntryPage() {
       combinedSteamKg,
       combinedBoilerFuelQty,
       combinedBoilerFuelCost,
+      combinedBoilerHours,
       boilerFuelBreakdown: Array.from(boilerFuelBreakdown.entries()),
       costPerKgSteam:
         combinedSteamKg > 0 && combinedBoilerFuelCost > 0
@@ -1282,6 +1325,7 @@ export function DailyEntryPage() {
 
       combinedGenKwh,
       combinedGenFuelCost,
+      combinedGenHours,
       combinedGenCostPerKwh:
         combinedGenKwh > 0 && combinedGenFuelCost > 0
           ? combinedGenFuelCost / combinedGenKwh
@@ -1289,6 +1333,7 @@ export function DailyEntryPage() {
 
       combinedSolarKwh,
       combinedSolarSavings,
+      combinedSolarHours,
       totalPlantPower,
       solarSharePct,
     };
@@ -1315,6 +1360,28 @@ export function DailyEntryPage() {
     genLiveMetrics.combinedGenFuelCost,
   ]);
 
+  const totalDraftOperatingHours = useMemo(() => {
+    let hrs = showGridSection ? gridTotals.totalHours : 0;
+    for (const util of formStandardUtilities) {
+      const h = Number(drafts[util.id]?.operatingHours || 0);
+      if (Number.isFinite(h) && h > 0) hrs += h;
+    }
+    return (
+      hrs +
+      genLiveMetrics.combinedBoilerHours +
+      genLiveMetrics.combinedGenHours +
+      genLiveMetrics.combinedSolarHours
+    );
+  }, [
+    showGridSection,
+    gridTotals.totalHours,
+    formStandardUtilities,
+    drafts,
+    genLiveMetrics.combinedBoilerHours,
+    genLiveMetrics.combinedGenHours,
+    genLiveMetrics.combinedSolarHours,
+  ]);
+
   const hasUnsavedChanges = dirtyUtilIds.size > 0 || gridDirty || genDirty;
 
   const previousLoggedDay = useMemo(() => {
@@ -1329,6 +1396,130 @@ export function DailyEntryPage() {
     }
     return latestDate;
   }, [entries, selectedCompany, selectedDate]);
+
+  // Historical factory/utility baseline medians/averages for real-time analyst hints
+  const factoryUtilBaselines = useMemo(() => {
+    const companyRateSums = new Map<string, { sum: number; count: number }>();
+    const companyHourlySums = new Map<string, { sum: number; count: number }>();
+    const globalRateSums = new Map<string, { sum: number; count: number }>();
+    const globalHourlySums = new Map<string, { sum: number; count: number }>();
+
+    for (const entry of entries) {
+      if (entry.date === selectedDate && entry.company === selectedCompany) continue;
+      if (entry.consumption > 0 && entry.cost > 0) {
+        const rate = entry.cost / entry.consumption;
+        const ck = `${entry.company}|||${entry.utilityId}`;
+        const cr = companyRateSums.get(ck) || { sum: 0, count: 0 };
+        cr.sum += rate;
+        cr.count += 1;
+        companyRateSums.set(ck, cr);
+
+        const gr = globalRateSums.get(entry.utilityId) || { sum: 0, count: 0 };
+        gr.sum += rate;
+        gr.count += 1;
+        globalRateSums.set(entry.utilityId, gr);
+      }
+      const hrs = Number(entry.operatingHours) || 0;
+      if (entry.consumption > 0 && hrs > 0 && hrs <= 24) {
+        const hrRate = entry.consumption / hrs;
+        const ck = `${entry.company}|||${entry.utilityId}`;
+        const ch = companyHourlySums.get(ck) || { sum: 0, count: 0 };
+        ch.sum += hrRate;
+        ch.count += 1;
+        companyHourlySums.set(ck, ch);
+
+        const gh = globalHourlySums.get(entry.utilityId) || { sum: 0, count: 0 };
+        gh.sum += hrRate;
+        gh.count += 1;
+        globalHourlySums.set(entry.utilityId, gh);
+      }
+    }
+
+    return (utilityId: string) => {
+      const ck = `${selectedCompany}|||${utilityId}`;
+      const cr = companyRateSums.get(ck);
+      const gr = globalRateSums.get(utilityId);
+      const avgRate =
+        cr && cr.count >= 2
+          ? cr.sum / cr.count
+          : gr && gr.count >= 2
+          ? gr.sum / gr.count
+          : null;
+
+      const ch = companyHourlySums.get(ck);
+      const gh = globalHourlySums.get(utilityId);
+      const avgHourly =
+        ch && ch.count >= 2
+          ? ch.sum / ch.count
+          : gh && gh.count >= 2
+          ? gh.sum / gh.count
+          : null;
+
+      return { avgRate, avgHourly };
+    };
+  }, [entries, selectedCompany, selectedDate]);
+
+  const draftHoursCompleteness = useMemo(() => {
+    let eligible = 0;
+    let filled = 0;
+    let warnings = 0;
+
+    if (showGridSection) {
+      for (const slot of gridSlots) {
+        const gd = gridDrafts[slot.key];
+        const kwh = Number(gd?.kwh || 0);
+        const hrs = Number(gd?.operatingHours || 0);
+        if (kwh > 0) {
+          eligible += 1;
+          if (hrs > 0 && hrs <= 24) filled += 1;
+        }
+        if (hrs > 24) warnings += 1;
+      }
+    }
+
+    for (const util of formStandardUtilities) {
+      const d = drafts[util.id];
+      const cons = Number(d?.consumption || 0);
+      const hrs = Number(d?.operatingHours || 0);
+      if (cons > 0) {
+        eligible += 1;
+        if (hrs > 0 && hrs <= 24) filled += 1;
+      }
+      if (hrs > 24 || (hrs > 0 && cons <= 0)) warnings += 1;
+    }
+
+    for (const b of genDraft.boilers) {
+      const steam = Number(b.steamKg || 0);
+      const hrs = Number(b.operatingHours || 0);
+      if (steam > 0) {
+        eligible += 1;
+        if (hrs > 0 && hrs <= 24) filled += 1;
+      }
+      if (hrs > 24) warnings += 1;
+    }
+
+    for (const g of genDraft.generators) {
+      const kwh = Number(g.kwh || 0);
+      const hrs = Number(g.operatingHours || 0);
+      if (kwh > 0) {
+        eligible += 1;
+        if (hrs > 0 && hrs <= 24) filled += 1;
+      }
+      if (hrs > 24) warnings += 1;
+    }
+
+    for (const s of genDraft.solarUnits) {
+      const kwh = Number(s.kwh || 0);
+      const hrs = Number(s.operatingHours || 0);
+      if (kwh > 0) {
+        eligible += 1;
+        if (hrs > 0 && hrs <= 24) filled += 1;
+      }
+      if (hrs > 24) warnings += 1;
+    }
+
+    return { eligible, filled, warnings };
+  }, [showGridSection, gridSlots, gridDrafts, formStandardUtilities, drafts, genDraft]);
 
   const handleFieldChange = (
     utilityId: string,
@@ -1350,6 +1541,7 @@ export function DailyEntryPage() {
       const current = prev[utilityId] || {
         unitCost: '',
         consumption: '',
+        operatingHours: '',
         cost: '',
         note: '',
       };
@@ -1413,7 +1605,12 @@ export function DailyEntryPage() {
     setFeedback(null);
     setGridDirty(true);
     setGridDrafts((prev) => {
-      const current = prev[slotKey] || { unitCost: '', kwh: '', cost: '' };
+      const current = prev[slotKey] || {
+        unitCost: '',
+        kwh: '',
+        operatingHours: '',
+        cost: '',
+      };
       const nextRow: GridDraftRow = { ...current, [field]: cleanVal };
 
       if (field === 'unitCost') {
@@ -1465,6 +1662,7 @@ export function DailyEntryPage() {
   const handleGenUnitChange = (
     index: number,
     field:
+      | 'operatingHours'
       | 'kwh'
       | 'fuelQty'
       | 'fuelUnitCost'
@@ -1582,6 +1780,7 @@ export function DailyEntryPage() {
   const handleBoilerUnitChange = (
     index: number,
     field:
+      | 'operatingHours'
       | 'steamKg'
       | 'fuelQty'
       | 'fuelUnitCost'
@@ -1698,7 +1897,7 @@ export function DailyEntryPage() {
 
   const handleSolarUnitChange = (
     index: number,
-    field: 'kwh' | 'unitCost' | 'savings',
+    field: 'operatingHours' | 'kwh' | 'unitCost' | 'savings',
     value: string
   ) => {
     if ((field === 'savings' || field === 'unitCost') && !unitCostUnlocked) {
@@ -1882,6 +2081,8 @@ export function DailyEntryPage() {
         next[util.id] = {
           unitCost: derivedRate,
           consumption: String(source.consumption),
+          operatingHours:
+            (source.operatingHours ?? 0) > 0 ? String(source.operatingHours) : '',
           cost: computedCost,
           note: source.note,
         };
@@ -1914,6 +2115,7 @@ export function DailyEntryPage() {
       if (!d) return false;
       return (
         d.consumption.trim() !== '' ||
+        d.operatingHours.trim() !== '' ||
         d.cost.trim() !== '' ||
         d.note.trim() !== ''
       );
@@ -1924,6 +2126,7 @@ export function DailyEntryPage() {
       if (!d) return false;
       const isBlank =
         d.consumption.trim() === '' &&
+        d.operatingHours.trim() === '' &&
         d.cost.trim() === '' &&
         d.note.trim() === '';
       return isBlank && existingMap.has(util.id);
@@ -1995,14 +2198,27 @@ export function DailyEntryPage() {
 
     if (showGridSection) {
       for (const slot of gridSlots) {
-        const gd = gridDrafts[slot.key] || { unitCost: '', kwh: '', cost: '' };
+        const gd = gridDrafts[slot.key] || {
+          unitCost: '',
+          kwh: '',
+          operatingHours: '',
+          cost: '',
+        };
         const kwhVal = gd.kwh.trim() === '' ? 0 : Number(gd.kwh);
+        const hrsVal = gd.operatingHours.trim() === '' ? 0 : Number(gd.operatingHours);
         const costVal = gd.cost.trim() === '' ? 0 : Number(gd.cost);
 
         if (!Number.isFinite(kwhVal) || kwhVal < 0 || kwhVal > 1000000000) {
           setFeedback({
             type: 'error',
             text: `${slot.label} kWh must be between 0 and 1,000,000,000.`,
+          });
+          return;
+        }
+        if (!Number.isFinite(hrsVal) || hrsVal < 0 || hrsVal > 24) {
+          setFeedback({
+            type: 'error',
+            text: `${slot.label} operating hours must be between 0 and 24.`,
           });
           return;
         }
@@ -2025,12 +2241,17 @@ export function DailyEntryPage() {
           return;
         }
 
-        if (gd.kwh.trim() !== '' || gd.cost.trim() !== '') {
+        if (
+          gd.kwh.trim() !== '' ||
+          gd.operatingHours.trim() !== '' ||
+          gd.cost.trim() !== ''
+        ) {
           hasGridInput = true;
           gridBreakdownRows.push({
             provider: slot.provider,
             tariff: slot.tariff,
             kwh: kwhVal,
+            operatingHours: hrsVal,
             unitCost: Number(gd.unitCost) || (kwhVal > 0 ? costVal / kwhVal : 0),
             cost: costVal,
           });
@@ -2041,6 +2262,7 @@ export function DailyEntryPage() {
     for (const util of rowsToSave) {
       const d = drafts[util.id];
       const consumption = d.consumption.trim() === '' ? 0 : Number(d.consumption);
+      const hrs = d.operatingHours.trim() === '' ? 0 : Number(d.operatingHours);
       const cost = d.cost.trim() === '' ? 0 : Number(d.cost);
       if (
         !Number.isFinite(consumption) ||
@@ -2050,6 +2272,13 @@ export function DailyEntryPage() {
         setFeedback({
           type: 'error',
           text: `${util.name} consumption must be between 0 and 1,000,000,000.`,
+        });
+        return;
+      }
+      if (!Number.isFinite(hrs) || hrs < 0 || hrs > 24) {
+        setFeedback({
+          type: 'error',
+          text: `${util.name} operating hours must be between 0 and 24.`,
         });
         return;
       }
@@ -2081,6 +2310,7 @@ export function DailyEntryPage() {
     let steamKg = 0;
     let boilerFuelQty = 0;
     let boilerFuelCost = 0;
+    let boilerOperatingHours = 0;
 
     for (let i = 0; i < genDraft.boilers.length; i++) {
       const b = genDraft.boilers[i];
@@ -2094,10 +2324,11 @@ export function DailyEntryPage() {
           ? normalizeSingleFuelMode(b.secondaryFuelMode, b.secondaryFuelUnit)
           : 'diesel';
 
+      const bHrs = parseVal(b.operatingHours, 24, `${bLabel} operating hours`);
       const sVal = parseVal(b.steamKg, 1000000000, `${bLabel} steam`);
       const qVal = parseVal(b.fuelQty, 1000000000, `${bLabel} fuel qty`);
       const cVal = parseVal(b.fuelCost, 100000000000, `${bLabel} fuel cost`);
-      if (sVal === null || qVal === null || cVal === null) return;
+      if (bHrs === null || sVal === null || qVal === null || cVal === null) return;
 
       if (
         !collectRate(
@@ -2149,6 +2380,7 @@ export function DailyEntryPage() {
         ...(b.fuelMode === 'dual'
           ? { primaryFuelMode: pMode, secondaryFuelMode: sMode }
           : {}),
+        operatingHours: bHrs,
         steamKg: sVal,
         fuelQty: qVal,
         fuelUnit: (b.fuelUnit.trim() || 'm³').slice(0, 16),
@@ -2167,6 +2399,7 @@ export function DailyEntryPage() {
       steamKg += sVal;
       boilerFuelQty += qVal + sQVal;
       boilerFuelCost += unitTotalFuelCost;
+      boilerOperatingHours += bHrs;
     }
 
     const unifiedGenPayload: GeneratorUnitReading[] = [];
@@ -2180,6 +2413,7 @@ export function DailyEntryPage() {
     let gasGenKwh = 0;
     let gasFuelQty = 0;
     let gasFuelCost = 0;
+    let generatorOperatingHours = 0;
 
     for (let i = 0; i < genDraft.generators.length; i++) {
       const g = genDraft.generators[i];
@@ -2193,10 +2427,11 @@ export function DailyEntryPage() {
           ? normalizeSingleFuelMode(g.secondaryFuelMode, g.secondaryFuelUnit)
           : 'diesel';
 
+      const gHrs = parseVal(g.operatingHours, 24, `${gLabel} operating hours`);
       const kVal = parseVal(g.kwh, 1000000000, `${gLabel} kWh`);
       const qVal = parseVal(g.fuelQty, 1000000000, `${gLabel} fuel qty`);
       const cVal = parseVal(g.fuelCost, 100000000000, `${gLabel} fuel cost`);
-      if (kVal === null || qVal === null || cVal === null) return;
+      if (gHrs === null || kVal === null || qVal === null || cVal === null) return;
 
       if (
         !collectRate(
@@ -2247,6 +2482,7 @@ export function DailyEntryPage() {
         ...(g.fuelMode === 'dual'
           ? { primaryFuelMode: pMode, secondaryFuelMode: sMode }
           : {}),
+        operatingHours: gHrs,
         kwh: kVal,
         fuelQty: qVal,
         fuelUnit: (g.fuelUnit.trim() || 'L').slice(0, 16),
@@ -2264,6 +2500,7 @@ export function DailyEntryPage() {
       };
 
       unifiedGenPayload.push(genReading);
+      generatorOperatingHours += gHrs;
 
       if (g.fuelMode === 'dual') {
         if (isGasLikeFuelMode(pMode)) {
@@ -2302,13 +2539,15 @@ export function DailyEntryPage() {
     const solarLegacyArray: number[] = [];
     let solarKwh = 0;
     let solarSavings = 0;
+    let solarOperatingHours = 0;
 
     for (let i = 0; i < genDraft.solarUnits.length; i++) {
       const s = genDraft.solarUnits[i];
       const sLabel = s.deviceName || `Solar #${i + 1}`;
+      const sHrs = parseVal(s.operatingHours, 24, `${sLabel} operating hours`);
       const kVal = parseVal(s.kwh, 1000000000, `${sLabel} kWh`);
       const savVal = parseVal(s.savings, 100000000000, `${sLabel} savings`);
-      if (kVal === null || savVal === null) return;
+      if (sHrs === null || kVal === null || savVal === null) return;
 
       if (
         s.unitCost.trim() !== '' &&
@@ -2337,12 +2576,14 @@ export function DailyEntryPage() {
         unitIndex: i + 1,
         deviceId: s.deviceId,
         deviceName: sLabel.slice(0, 80),
+        operatingHours: sHrs,
         kwh: kVal,
         unitCost: resolvedSolarRate,
         savings: savVal,
       });
       solarKwh += kVal;
       solarSavings += savVal;
+      solarOperatingHours += sHrs;
     }
 
     const generatorKwh = dieselGenKwh + gasGenKwh;
@@ -2353,11 +2594,14 @@ export function DailyEntryPage() {
       steamKg > 0 ||
       boilerFuelQty > 0 ||
       boilerFuelCost > 0 ||
+      boilerOperatingHours > 0 ||
       generatorKwh > 0 ||
       generatorFuelQty > 0 ||
       generatorFuelCost > 0 ||
+      generatorOperatingHours > 0 ||
       solarKwh > 0 ||
       solarSavings > 0 ||
+      solarOperatingHours > 0 ||
       hasGridInput ||
       genDraft.note.trim() !== '';
 
@@ -2403,6 +2647,7 @@ export function DailyEntryPage() {
         util: (typeof utilities)[number],
         consumption: number,
         cost: number,
+        operatingHours: number,
         note: string
       ) => {
         let existing = existingMap.get(util.id);
@@ -2430,6 +2675,7 @@ export function DailyEntryPage() {
             unit: util.unit.slice(0, 30),
             consumption,
             cost,
+            operatingHours,
             note,
             enteredBy: user.uid,
             enteredByName: safeEnteredByName,
@@ -2442,6 +2688,7 @@ export function DailyEntryPage() {
               unit: util.unit,
               consumption,
               cost,
+              operatingHours,
               note,
               enteredBy: user.uid,
               enteredByName: safeEnteredByName,
@@ -2456,6 +2703,7 @@ export function DailyEntryPage() {
             unit: util.unit.slice(0, 30),
             consumption,
             cost,
+            operatingHours,
             note,
             enteredBy: user.uid,
             enteredByName: safeEnteredByName,
@@ -2472,6 +2720,7 @@ export function DailyEntryPage() {
               unit: util.unit,
               consumption,
               cost,
+              operatingHours,
               note,
               enteredBy: user.uid,
               enteredByName: safeEnteredByName,
@@ -2492,9 +2741,11 @@ export function DailyEntryPage() {
       for (const util of rowsToSave) {
         const d = drafts[util.id];
         const consumption = d.consumption.trim() === '' ? 0 : Number(d.consumption);
+        const operatingHours =
+          d.operatingHours.trim() === '' ? 0 : Number(d.operatingHours);
         const cost = d.cost.trim() === '' ? 0 : Number(d.cost);
         const note = d.note.trim().slice(0, 300);
-        await upsertUtilityEntry(util, consumption, cost, note);
+        await upsertUtilityEntry(util, consumption, cost, operatingHours, note);
       }
 
       if (showGridSection && electricityUtility) {
@@ -2515,6 +2766,7 @@ export function DailyEntryPage() {
             electricityUtility,
             gridTotals.totalKwh,
             gridTotals.totalCost,
+            gridTotals.totalHours,
             gridSummaryNote
           );
         } else if (shouldDeleteElectricityFromGrid) {
@@ -2560,6 +2812,8 @@ export function DailyEntryPage() {
         }
       }
 
+      const nextGenMap = new Map(generationEntries.map((item) => [item.id, item]));
+
       if (hasGenerationData) {
         const unitReadingsPayload: GenerationUnitReadings = {
           boilerUnits: boilerUnitPayload,
@@ -2573,13 +2827,13 @@ export function DailyEntryPage() {
           solarUnits: solarLegacyArray,
         };
         let unitReadingsJson = JSON.stringify(unitReadingsPayload);
-        if (unitReadingsJson.length > 12000) {
+        if (unitReadingsJson.length > 16000) {
           const compactPayload: GenerationUnitReadings = {
             boilerUnits: boilerUnitPayload,
             generatorUnits: unifiedGenPayload,
             solarUnitDetails: solarUnitPayload,
           };
-          unitReadingsJson = JSON.stringify(compactPayload).slice(0, 12000);
+          unitReadingsJson = JSON.stringify(compactPayload).slice(0, 16000);
         }
         const gridBreakdownJson = JSON.stringify(gridBreakdownRows).slice(0, 2500);
 
@@ -2623,11 +2877,13 @@ export function DailyEntryPage() {
           boilerFuelQty,
           boilerFuelUnit: primaryBoilerUnit.slice(0, 30),
           boilerFuelCost,
+          boilerOperatingHours: Math.min(1000, boilerOperatingHours),
           generatorCount: plantSetup.generators.length,
           generatorKwh,
           generatorFuelQty,
           generatorFuelUnit: genFuelUnit.slice(0, 30),
           generatorFuelCost,
+          generatorOperatingHours: Math.min(1000, generatorOperatingHours),
           dieselGeneratorCount: plantSetup.dieselGeneratorCount,
           dieselGenKwh,
           dieselFuelQty,
@@ -2639,6 +2895,7 @@ export function DailyEntryPage() {
           solarSystemCount: plantSetup.solars.length,
           solarKwh,
           solarSavings,
+          solarOperatingHours: Math.min(1000, solarOperatingHours),
           gridProviderBreakdown: gridBreakdownJson,
           unitReadings: unitReadingsJson,
           note: genDraft.note.trim().slice(0, 300),
@@ -2649,6 +2906,14 @@ export function DailyEntryPage() {
 
         if (existingGenDoc) {
           batch.update(doc(db, 'generationEntries', existingGenDoc.id), genPayload);
+          if (canViewSelectedCompany) {
+            nextGenMap.set(existingGenDoc.id, {
+              ...existingGenDoc,
+              ...genPayload,
+              createdAt: existingGenDoc.createdAt,
+              updatedAt: existingGenDoc.updatedAt,
+            });
+          }
         } else {
           batch.set(doc(db, 'generationEntries', genDocId), {
             date: selectedDate,
@@ -2656,9 +2921,20 @@ export function DailyEntryPage() {
             ...genPayload,
             createdAt: serverTimestamp(),
           });
+          if (canViewSelectedCompany) {
+            nextGenMap.set(genDocId, {
+              id: genDocId,
+              date: selectedDate,
+              company: selectedCompany,
+              ...genPayload,
+              createdAt: null,
+              updatedAt: null,
+            });
+          }
         }
       } else if (existingGenDoc) {
         batch.delete(doc(db, 'generationEntries', existingGenDoc.id));
+        if (canViewSelectedCompany) nextGenMap.delete(existingGenDoc.id);
       }
 
       await batch.commit();
@@ -2686,24 +2962,31 @@ export function DailyEntryPage() {
       )})`;
 
       const nextEntries = Array.from(nextEntriesMap.values());
+      const nextGenerationEntries = Array.from(nextGenMap.values());
       const affectedTabs = canViewSelectedCompany
         ? [{ company: selectedCompany, monthKey: selectedMonth }]
         : undefined;
+      const hasAnyRecordChange =
+        savedUtilityChanges || hasGenerationData || shouldDeleteExistingGen;
 
-      if (
+      const canAutoSyncNow = Boolean(
         profile.role === 'admin' &&
-        sheetsConfig?.syncMode === 'appsScript' &&
-        canViewSelectedCompany &&
-        savedUtilityChanges
-      ) {
+          sheetsConfig &&
+          sheetsConfig.autoSyncEnabled !== false &&
+          (sheetsConfig.syncMode === 'appsScript' || Boolean(googleAccessToken))
+      );
+
+      if (canAutoSyncNow && canViewSelectedCompany && hasAnyRecordChange) {
         try {
-          const syncedCount = await syncEntriesToConnectedSheet(
-            nextEntries,
-            affectedTabs
-          );
+          const res = await runTwoWaySyncNow({
+            entriesOverride: nextEntries,
+            generationEntriesOverride: nextGenerationEntries,
+            ensureTabKeys: affectedTabs,
+            pruneStaleTabs: false,
+          });
           setFeedback({
             type: 'success',
-            text: `${actionLabel} and synced ${formatNumber(syncedCount, 0)} rows to Google Sheets.`,
+            text: `${actionLabel} — ${res.summary}.`,
           });
         } catch (syncErr) {
           setFeedback({
@@ -2721,10 +3004,11 @@ export function DailyEntryPage() {
         if (
           profile.role === 'admin' &&
           sheetsConfig &&
+          sheetsConfig.autoSyncEnabled === false &&
           promptSyncAfterSave &&
           googleAccessToken &&
           canViewSelectedCompany &&
-          savedUtilityChanges
+          hasAnyRecordChange
         ) {
           setSyncModalOpen(true);
         }
@@ -2738,11 +3022,46 @@ export function DailyEntryPage() {
 
   const handleDeleteGeneration = async (genId: string) => {
     setGenDeleting(true);
+    const targetGen = generationEntries.find((item) => item.id === genId);
     try {
       await deleteDoc(doc(db, 'generationEntries', genId));
       setConfirmDeleteGenId(null);
       setGenDirty(false);
-      setFeedback({ type: 'success', text: 'Generation log deleted.' });
+
+      const canAutoSyncNow = Boolean(
+        profile?.role === 'admin' &&
+          sheetsConfig &&
+          sheetsConfig.autoSyncEnabled !== false &&
+          (sheetsConfig.syncMode === 'appsScript' || Boolean(googleAccessToken))
+      );
+
+      if (canAutoSyncNow) {
+        try {
+          const nextGen = generationEntries.filter((item) => item.id !== genId);
+          const ensureTabs = targetGen
+            ? [{ company: targetGen.company, monthKey: targetGen.date.slice(0, 7) }]
+            : undefined;
+          const res = await runTwoWaySyncNow({
+            entriesOverride: entries,
+            generationEntriesOverride: nextGen,
+            ensureTabKeys: ensureTabs,
+            pruneStaleTabs: false,
+          });
+          setFeedback({
+            type: 'success',
+            text: `Generation log deleted — ${res.summary}.`,
+          });
+        } catch (syncErr) {
+          setFeedback({
+            type: 'error',
+            text: `Generation log deleted, but Google Sheets sync failed: ${
+              syncErr instanceof Error ? syncErr.message : 'Unknown error'
+            }`,
+          });
+        }
+      } else {
+        setFeedback({ type: 'success', text: 'Generation log deleted.' });
+      }
     } catch (error) {
       handleFirestoreError(
         error,
@@ -2761,7 +3080,14 @@ export function DailyEntryPage() {
       await deleteDoc(doc(db, 'utilityEntries', entryId));
       setConfirmDeleteId(null);
 
-      if (profile?.role === 'admin' && sheetsConfig?.syncMode === 'appsScript') {
+      const canAutoSyncNow = Boolean(
+        profile?.role === 'admin' &&
+          sheetsConfig &&
+          sheetsConfig.autoSyncEnabled !== false &&
+          (sheetsConfig.syncMode === 'appsScript' || Boolean(googleAccessToken))
+      );
+
+      if (canAutoSyncNow) {
         try {
           const nextEntries = entries.filter((item) => item.id !== entryId);
           const ensureTabs = targetEntry
@@ -2772,13 +3098,15 @@ export function DailyEntryPage() {
                 },
               ]
             : undefined;
-          const count = await syncEntriesToConnectedSheet(nextEntries, ensureTabs);
+          const res = await runTwoWaySyncNow({
+            entriesOverride: nextEntries,
+            generationEntriesOverride: generationEntries,
+            ensureTabKeys: ensureTabs,
+            pruneStaleTabs: false,
+          });
           setFeedback({
             type: 'success',
-            text: `Entry deleted and Google Sheet synced (${formatNumber(
-              count,
-              0
-            )} rows).`,
+            text: `Entry deleted — ${res.summary}.`,
           });
         } catch (syncErr) {
           setFeedback({
@@ -2801,13 +3129,16 @@ export function DailyEntryPage() {
   const handleOpenSyncSheets = async () => {
     if (profile?.role !== 'admin') return;
     setFeedback(null);
-    if (sheetsConfig?.syncMode === 'appsScript') {
+    if (
+      sheetsConfig?.syncMode === 'appsScript' ||
+      (sheetsConfig?.autoSyncEnabled !== false && Boolean(googleAccessToken))
+    ) {
       setSyncingSheets(true);
       try {
-        const count = await syncEntriesToConnectedSheet();
+        const res = await runTwoWaySyncNow({ forceDirection: 'bidirectional' });
         setFeedback({
           type: 'success',
-          text: `Synced ${formatNumber(count, 0)} entries to Google Sheets.`,
+          text: `Two-way sync complete: ${res.summary}.`,
         });
       } catch (err) {
         setFeedback({
@@ -3059,16 +3390,29 @@ export function DailyEntryPage() {
     const draft = drafts[util.id] || {
       unitCost: '',
       consumption: '',
+      operatingHours: '',
       cost: '',
       note: '',
     };
+    const consVal = Number(draft.consumption) || 0;
+    const hrsVal = Number(draft.operatingHours) || 0;
+    const hourlyRate = hrsVal > 0 && consVal > 0 ? consVal / hrsVal : null;
+    const utilBase = factoryUtilBaselines(util.id);
+    const rowHints = evaluateUtilityDraftHints({
+      consumptionStr: draft.consumption,
+      hoursStr: draft.operatingHours,
+      costStr: draft.cost,
+      unitLabel: util.unit,
+      baselineRate: utilBase.avgRate,
+      baselineHourly: utilBase.avgHourly,
+    });
     return (
       <div
         key={util.id}
         className="p-4 sm:p-5 space-y-3 hover:bg-slate-50/40 transition-colors"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex flex-wrap items-center gap-2.5 min-w-0">
             <span
               className="w-2.5 h-2.5 rounded-sm shrink-0"
               style={{ backgroundColor: util.color }}
@@ -3077,13 +3421,21 @@ export function DailyEntryPage() {
               {util.name}
             </span>
             <span className="text-xs text-slate-500">({util.unit})</span>
+            {hourlyRate !== null && (
+              <span className="inline-flex items-center gap-1 text-xs font-semibold text-teal-800 tabular-nums">
+                · <Clock className="w-3 h-3 text-teal-700" />
+                {formatNumber(hourlyRate, 2)} {util.unit}/hr
+              </span>
+            )}
           </div>
           {!unitCostUnlocked && renderInlineRateBadge(draft.unitCost, util.unit)}
         </div>
 
         <div
           className={`grid grid-cols-1 gap-3.5 ${
-            unitCostUnlocked ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
+            unitCostUnlocked
+              ? 'sm:grid-cols-2 lg:grid-cols-4'
+              : 'sm:grid-cols-3'
           }`}
         >
           {unitCostUnlocked && (
@@ -3124,6 +3476,28 @@ export function DailyEntryPage() {
 
           <div>
             <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              Run Hours (0–24 hrs)
+            </label>
+            <div className="flex items-stretch h-10 rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-teal-600/20 focus-within:border-teal-600">
+              <input
+                type="text"
+                inputMode="decimal"
+                value={draft.operatingHours}
+                onChange={(e) =>
+                  handleFieldChange(util.id, 'operatingHours', e.target.value)
+                }
+                placeholder="0"
+                aria-label={`${util.name} operating hours`}
+                className="w-full min-w-0 px-3 text-sm text-right font-mono-num tabular-nums text-slate-900 bg-transparent focus:outline-none"
+              />
+              <span className="px-2.5 bg-slate-50 border-l border-slate-200 text-xs text-slate-500 flex items-center select-none shrink-0">
+                hrs
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
               Total Cost (৳)
             </label>
             <div
@@ -3154,12 +3528,39 @@ export function DailyEntryPage() {
             </div>
           </div>
         </div>
+
+        {rowHints.length > 0 && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-0.5 text-[11px]">
+            {rowHints.map((hint, hIdx) => (
+              <span
+                key={`${util.id}-hint-${hIdx}`}
+                className={`inline-flex items-center gap-1 ${
+                  hint.tone === 'warning'
+                    ? 'text-amber-700 font-medium'
+                    : 'text-slate-500'
+                }`}
+              >
+                {hint.tone === 'warning' ? (
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                ) : (
+                  <Info className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                )}
+                {hint.text}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
 
   return (
-    <div className="space-y-5">
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      className="space-y-5"
+    >
       {/* Compact Top Context Bar */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 sm:px-5 space-y-3.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3260,38 +3661,8 @@ export function DailyEntryPage() {
               <Calendar className="w-3.5 h-3.5" />
               {showCalendar ? 'Hide Calendar' : 'Month Calendar'}
             </button>
-
-            {selectedCompanyObj && (
-              <button
-                type="button"
-                onClick={() => setShowEquipEditor((prev) => !prev)}
-                className={`inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                  showEquipEditor
-                    ? 'bg-teal-700 border-teal-700 text-white'
-                    : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <SlidersHorizontal className="w-3.5 h-3.5" />
-                {showEquipEditor ? 'Hide Equipment' : 'Equipment Setup'}
-              </button>
-            )}
           </div>
         </div>
-
-        {showEquipEditor && selectedCompanyObj && (
-          <div className="pt-2 border-t border-slate-200">
-            <CompanyEquipmentEditor
-              company={selectedCompanyObj}
-              canEdit={true}
-              onClose={() => setShowEquipEditor(false)}
-              onSaved={(msg) => {
-                setShowEquipEditor(false);
-                setFeedback({ type: 'success', text: msg });
-              }}
-              onError={(msg) => setFeedback({ type: 'error', text: msg })}
-            />
-          </div>
-        )}
 
         {/* Collapsible 31-day Month Calendar */}
         {showCalendar && (
@@ -3415,6 +3786,14 @@ export function DailyEntryPage() {
             <div className="px-3 py-2 rounded-lg bg-white border border-slate-200 tabular-nums">
               <span className="text-slate-500">Total Cost: </span>
               <strong className="text-slate-900">{formatCurrency(totalDraftCost)}</strong>
+              {totalDraftOperatingHours > 0 && (
+                <>
+                  <span className="text-slate-300 mx-1.5">|</span>
+                  <span className="text-slate-600 font-semibold">
+                    {formatNumber(totalDraftOperatingHours, 1)} Asset Hrs
+                  </span>
+                </>
+              )}
               {genLiveMetrics.combinedSolarSavings > 0 && (
                 <>
                   <span className="text-slate-300 mx-1.5">|</span>
@@ -3459,15 +3838,31 @@ export function DailyEntryPage() {
                   const gd = gridDrafts[slot.key] || {
                     unitCost: '',
                     kwh: '',
+                    operatingHours: '',
                     cost: '',
                   };
+                  const slotKwh = Number(gd.kwh) || 0;
+                  const slotHrs = Number(gd.operatingHours) || 0;
+                  const slotAvgKw =
+                    slotHrs > 0 && slotKwh > 0 ? slotKwh / slotHrs : null;
+                  const elecBase = electricityUtility
+                    ? factoryUtilBaselines(electricityUtility.id)
+                    : { avgRate: null, avgHourly: null };
+                  const slotHints = evaluateUtilityDraftHints({
+                    consumptionStr: gd.kwh,
+                    hoursStr: gd.operatingHours,
+                    costStr: gd.cost,
+                    unitLabel: 'kWh',
+                    baselineRate: elecBase.avgRate,
+                    baselineHourly: null,
+                  });
                   return (
                     <div
                       key={slot.key}
                       className="p-4 sm:p-5 space-y-3 hover:bg-slate-50/40 transition-colors"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex flex-wrap items-center gap-2.5">
                           <span
                             className={`w-2.5 h-2.5 rounded-sm shrink-0 ${
                               slot.tariff === 'peak'
@@ -3481,13 +3876,21 @@ export function DailyEntryPage() {
                             {slot.label}
                           </span>
                           <span className="text-xs text-slate-500">(kWh)</span>
+                          {slotAvgKw !== null && (
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-800 tabular-nums">
+                              · <Clock className="w-3 h-3 text-blue-700" />
+                              Avg {formatNumber(slotAvgKw, 2)} kW ({formatNumber(slotAvgKw, 2)} kWh/hr)
+                            </span>
+                          )}
                         </div>
                         {!unitCostUnlocked && renderInlineRateBadge(gd.unitCost, 'kWh')}
                       </div>
 
                       <div
                         className={`grid grid-cols-1 gap-3.5 ${
-                          unitCostUnlocked ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
+                          unitCostUnlocked
+                            ? 'sm:grid-cols-2 lg:grid-cols-4'
+                            : 'sm:grid-cols-3'
                         }`}
                       >
                         {unitCostUnlocked && (
@@ -3528,6 +3931,32 @@ export function DailyEntryPage() {
 
                         <div>
                           <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                            Run Hours (0–24 hrs)
+                          </label>
+                          <div className="flex items-stretch h-10 rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-teal-600/20 focus-within:border-teal-600">
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={gd.operatingHours}
+                              onChange={(e) =>
+                                handleGridFieldChange(
+                                  slot.key,
+                                  'operatingHours',
+                                  e.target.value
+                                )
+                              }
+                              placeholder="0"
+                              aria-label={`${slot.label} operating hours`}
+                              className="w-full min-w-0 px-3 text-sm text-right font-mono-num tabular-nums text-slate-900 bg-transparent focus:outline-none"
+                            />
+                            <span className="px-2.5 bg-slate-50 border-l border-slate-200 text-xs text-slate-500 flex items-center select-none shrink-0">
+                              hrs
+                            </span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-500 mb-1">
                             Electricity Cost (৳)
                           </label>
                           <div
@@ -3560,6 +3989,28 @@ export function DailyEntryPage() {
                           </div>
                         </div>
                       </div>
+
+                      {slotHints.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-0.5 text-[11px]">
+                          {slotHints.map((hint, hIdx) => (
+                            <span
+                              key={`${slot.key}-hint-${hIdx}`}
+                              className={`inline-flex items-center gap-1 ${
+                                hint.tone === 'warning'
+                                  ? 'text-amber-700 font-medium'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {hint.tone === 'warning' ? (
+                                <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                              ) : (
+                                <Info className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                              )}
+                              {hint.text}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -3595,6 +4046,7 @@ export function DailyEntryPage() {
 
             <div className="divide-y divide-slate-100">
               {genDraft.generators.map((unit, idx) => {
+                const hrsVal = Number(unit.operatingHours) || 0;
                 const kwhVal = Number(unit.kwh) || 0;
                 const fQtyVal = Number(unit.fuelQty) || 0;
                 const fCostVal = Number(unit.fuelCost) || 0;
@@ -3611,6 +4063,9 @@ export function DailyEntryPage() {
                   unit.fuelMode !== 'dual' && fQtyVal > 0 && kwhVal > 0
                     ? kwhVal / fQtyVal
                     : null;
+                const avgKw = hrsVal > 0 && kwhVal > 0 ? kwhVal / hrsVal : null;
+                const fuelPerHr =
+                  hrsVal > 0 && fQtyVal > 0 ? fQtyVal / hrsVal : null;
                 const pMode: SingleDeviceFuelMode =
                   unit.fuelMode === 'dual'
                     ? normalizeSingleFuelMode(unit.primaryFuelMode, unit.fuelUnit)
@@ -3652,6 +4107,16 @@ export function DailyEntryPage() {
                         <span className="text-xs text-slate-500 font-medium">
                           · {formatDeviceFuelBadge(unit)}
                         </span>
+                        {(avgKw !== null || fuelPerHr !== null) && (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-teal-800 tabular-nums">
+                            · <Clock className="w-3 h-3 text-teal-700" />
+                            {avgKw !== null ? `Avg ${formatNumber(avgKw, 1)} kW` : ''}
+                            {avgKw !== null && fuelPerHr !== null ? ' · ' : ''}
+                            {fuelPerHr !== null
+                              ? `${formatNumber(fuelPerHr, 2)} ${unit.fuelUnit}/hr`
+                              : ''}
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 font-medium tabular-nums">
@@ -3679,10 +4144,32 @@ export function DailyEntryPage() {
                     <div
                       className={`grid grid-cols-1 gap-3.5 ${
                         unitCostUnlocked
-                          ? 'sm:grid-cols-2 lg:grid-cols-4'
-                          : 'sm:grid-cols-3'
+                          ? 'sm:grid-cols-2 lg:grid-cols-5'
+                          : 'sm:grid-cols-2 lg:grid-cols-4'
                       }`}
                     >
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                          Run Hours (0–24 hrs)
+                        </label>
+                        <div className="flex items-stretch h-10 rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-teal-600/20">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={unit.operatingHours}
+                            onChange={(e) =>
+                              handleGenUnitChange(idx, 'operatingHours', e.target.value)
+                            }
+                            placeholder="0"
+                            aria-label={`${unit.deviceName} operating hours`}
+                            className="w-full min-w-0 px-3 text-sm text-right font-mono-num tabular-nums bg-transparent focus:outline-none"
+                          />
+                          <span className="px-2.5 bg-slate-50 border-l border-slate-200 text-xs text-slate-500 flex items-center shrink-0">
+                            hrs
+                          </span>
+                        </div>
+                      </div>
+
                       <div>
                         <label className="block text-[11px] font-medium text-slate-500 mb-1">
                           Power Generated (kWh)
@@ -3907,6 +4394,60 @@ export function DailyEntryPage() {
                         </div>
                       </div>
                     )}
+
+                    {(() => {
+                      const genHints: { level: 'error' | 'warn' | 'info'; text: string }[] = [];
+                      if (hrsVal > 24) {
+                        genHints.push({
+                          level: 'error',
+                          text: 'Operating hours cannot exceed 24 hrs/day.',
+                        });
+                      } else if (hrsVal > 0 && kwhVal === 0) {
+                        genHints.push({
+                          level: 'warn',
+                          text: 'Run hours logged with 0 kWh generated — verify meter output.',
+                        });
+                      } else if (kwhVal > 0 && hrsVal === 0) {
+                        genHints.push({
+                          level: 'info',
+                          text: 'Enter run hours to calculate average kW load and fuel/hr.',
+                        });
+                      }
+                      if (
+                        (kwhVal > 0 || fQtyVal > 0) &&
+                        fQtyVal > 0 &&
+                        totalUnitFuelCost === 0
+                      ) {
+                        genHints.push({
+                          level: 'warn',
+                          text: 'Fuel quantity logged with ৳0 fuel cost — verify fuel unit rate.',
+                        });
+                      }
+                      if (genHints.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] pt-0.5">
+                          {genHints.map((h, hIdx) => (
+                            <span
+                              key={hIdx}
+                              className={`inline-flex items-center gap-1 font-medium ${
+                                h.level === 'error'
+                                  ? 'text-rose-700'
+                                  : h.level === 'warn'
+                                  ? 'text-amber-700'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {h.level === 'info' ? (
+                                <Info className="w-3 h-3 shrink-0" />
+                              ) : (
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                              )}
+                              {h.text}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -3934,114 +4475,193 @@ export function DailyEntryPage() {
             </div>
 
             <div className="divide-y divide-slate-100">
-              {genDraft.solarUnits.map((solar, idx) => (
-                <div
-                  key={solar.deviceId || `solar-${idx}`}
-                  className="p-4 sm:p-5 space-y-3 hover:bg-emerald-50/20 transition-colors"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2.5">
-                      <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 shrink-0" />
-                      <span className="text-sm font-semibold text-slate-900">
-                        {solar.deviceName}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        · Zero fuel (Clean Energy)
-                      </span>
-                    </div>
-                    {!unitCostUnlocked &&
-                      renderInlineRateBadge(
-                        solar.unitCost,
-                        'kWh',
-                        activeElectricityRate > 0
-                          ? `Ref: ৳ ${formatCalcValue(activeElectricityRate, 2)}/kWh`
-                          : 'Rate not set'
-                      )}
-                  </div>
-
+              {genDraft.solarUnits.map((solar, idx) => {
+                const sKwh = Number(solar.kwh) || 0;
+                const sHrs = Number(solar.operatingHours) || 0;
+                const sAvgKw = sHrs > 0 && sKwh > 0 ? sKwh / sHrs : null;
+                return (
                   <div
-                    className={`grid grid-cols-1 gap-3.5 ${
-                      unitCostUnlocked ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
-                    }`}
+                    key={solar.deviceId || `solar-${idx}`}
+                    className="p-4 sm:p-5 space-y-3 hover:bg-emerald-50/20 transition-colors"
                   >
-                    {unitCostUnlocked && (
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                          Solar Tariff Rate (Editable)
-                        </label>
-                        {renderEditableRateInput(
-                          solar.unitCost,
-                          (v) => handleSolarUnitChange(idx, 'unitCost', v),
-                          'kWh',
-                          `${solar.deviceName} tariff rate`,
-                          activeElectricityRate > 0
-                            ? `Ref ${formatCalcValue(activeElectricityRate, 2)}`
-                            : undefined
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 shrink-0" />
+                        <span className="text-sm font-semibold text-slate-900">
+                          {solar.deviceName}
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          · Zero fuel (Clean Energy)
+                        </span>
+                        {sAvgKw !== null && (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 tabular-nums">
+                            · <Clock className="w-3 h-3" />
+                            Avg {formatNumber(sAvgKw, 1)} kW ({formatNumber(sAvgKw, 1)} kWh/hr)
+                          </span>
                         )}
                       </div>
-                    )}
-
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                        Solar Generation (kWh)
-                      </label>
-                      <div className="flex items-stretch h-10 rounded-lg border border-emerald-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-600/20">
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          value={solar.kwh}
-                          onChange={(e) =>
-                            handleSolarUnitChange(idx, 'kwh', e.target.value)
-                          }
-                          placeholder="0"
-                          aria-label={`${solar.deviceName} kWh`}
-                          className="w-full min-w-0 px-3 text-sm text-right font-mono-num tabular-nums bg-transparent focus:outline-none"
-                        />
-                        <span className="px-2.5 bg-emerald-50 border-l border-emerald-200 text-xs text-emerald-800 flex items-center shrink-0">
-                          kWh
-                        </span>
-                      </div>
+                      {!unitCostUnlocked &&
+                        renderInlineRateBadge(
+                          solar.unitCost,
+                          'kWh',
+                          activeElectricityRate > 0
+                            ? `Ref: ৳ ${formatCalcValue(activeElectricityRate, 2)}/kWh`
+                            : 'Rate not set'
+                        )}
                     </div>
 
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                        Estimated Savings (৳)
-                      </label>
-                      <div
-                        className={`flex items-stretch h-10 rounded-lg border overflow-hidden ${
-                          !unitCostUnlocked
-                            ? 'border-emerald-200 bg-emerald-50/60'
-                            : 'border-emerald-300 bg-white focus-within:ring-2 focus-within:ring-emerald-600/20'
-                        }`}
-                      >
-                        <span
-                          className="px-2.5 bg-emerald-50 border-r border-emerald-200 text-xs text-emerald-800 flex items-center shrink-0"
-                          title="Money Saved by Solar (Additive)"
-                        >
-                          Saved ৳
-                        </span>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          readOnly={!unitCostUnlocked}
-                          tabIndex={!unitCostUnlocked ? -1 : undefined}
-                          value={solar.savings}
-                          onChange={(e) =>
-                            handleSolarUnitChange(idx, 'savings', e.target.value)
-                          }
-                          placeholder="0.00"
-                          aria-label={`${solar.deviceName} savings BDT`}
-                          className={`w-full min-w-0 px-2.5 text-sm text-right font-mono-num tabular-nums font-semibold focus:outline-none ${
+                    <div
+                      className={`grid grid-cols-1 gap-3.5 ${
+                        unitCostUnlocked
+                          ? 'sm:grid-cols-2 lg:grid-cols-4'
+                          : 'sm:grid-cols-3'
+                      }`}
+                    >
+                      {unitCostUnlocked && (
+                        <div>
+                          <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                            Solar Tariff Rate (Editable)
+                          </label>
+                          {renderEditableRateInput(
+                            solar.unitCost,
+                            (v) => handleSolarUnitChange(idx, 'unitCost', v),
+                            'kWh',
+                            `${solar.deviceName} tariff rate`,
+                            activeElectricityRate > 0
+                              ? `Ref ${formatCalcValue(activeElectricityRate, 2)}`
+                              : undefined
+                          )}
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                          Sun / Run Hours (0–24 hrs)
+                        </label>
+                        <div className="flex items-stretch h-10 rounded-lg border border-emerald-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-600/20">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={solar.operatingHours}
+                            onChange={(e) =>
+                              handleSolarUnitChange(idx, 'operatingHours', e.target.value)
+                            }
+                            placeholder="0"
+                            aria-label={`${solar.deviceName} operating hours`}
+                            className="w-full min-w-0 px-3 text-sm text-right font-mono-num tabular-nums bg-transparent focus:outline-none"
+                          />
+                          <span className="px-2.5 bg-emerald-50 border-l border-emerald-200 text-xs text-emerald-800 flex items-center shrink-0">
+                            hrs
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                          Solar Generation (kWh)
+                        </label>
+                        <div className="flex items-stretch h-10 rounded-lg border border-emerald-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-emerald-600/20">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={solar.kwh}
+                            onChange={(e) =>
+                              handleSolarUnitChange(idx, 'kwh', e.target.value)
+                            }
+                            placeholder="0"
+                            aria-label={`${solar.deviceName} kWh`}
+                            className="w-full min-w-0 px-3 text-sm text-right font-mono-num tabular-nums bg-transparent focus:outline-none"
+                          />
+                          <span className="px-2.5 bg-emerald-50 border-l border-emerald-200 text-xs text-emerald-800 flex items-center shrink-0">
+                            kWh
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                          Estimated Savings (৳)
+                        </label>
+                        <div
+                          className={`flex items-stretch h-10 rounded-lg border overflow-hidden ${
                             !unitCostUnlocked
-                              ? 'text-emerald-800 bg-transparent cursor-not-allowed'
-                              : 'text-slate-900 bg-transparent'
+                              ? 'border-emerald-200 bg-emerald-50/60'
+                              : 'border-emerald-300 bg-white focus-within:ring-2 focus-within:ring-emerald-600/20'
                           }`}
-                        />
+                        >
+                          <span
+                            className="px-2.5 bg-emerald-50 border-r border-emerald-200 text-xs text-emerald-800 flex items-center shrink-0"
+                            title="Money Saved by Solar (Additive)"
+                          >
+                            Saved ৳
+                          </span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            readOnly={!unitCostUnlocked}
+                            tabIndex={!unitCostUnlocked ? -1 : undefined}
+                            value={solar.savings}
+                            onChange={(e) =>
+                              handleSolarUnitChange(idx, 'savings', e.target.value)
+                            }
+                            placeholder="0.00"
+                            aria-label={`${solar.deviceName} savings BDT`}
+                            className={`w-full min-w-0 px-2.5 text-sm text-right font-mono-num tabular-nums font-semibold focus:outline-none ${
+                              !unitCostUnlocked
+                                ? 'text-emerald-800 bg-transparent cursor-not-allowed'
+                                : 'text-slate-900 bg-transparent'
+                            }`}
+                          />
+                        </div>
                       </div>
                     </div>
+
+                    {(() => {
+                      const solarHints: { level: 'error' | 'warn' | 'info'; text: string }[] = [];
+                      if (sHrs > 24) {
+                        solarHints.push({
+                          level: 'error',
+                          text: 'Sun / run hours cannot exceed 24 hrs/day.',
+                        });
+                      } else if (sHrs > 0 && sKwh === 0) {
+                        solarHints.push({
+                          level: 'warn',
+                          text: 'Run hours logged with 0 kWh solar yield — verify inverter reading.',
+                        });
+                      } else if (sKwh > 0 && sHrs === 0) {
+                        solarHints.push({
+                          level: 'info',
+                          text: 'Enter sun hours to track average kW solar output.',
+                        });
+                      }
+                      if (solarHints.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] pt-0.5">
+                          {solarHints.map((h, hIdx) => (
+                            <span
+                              key={hIdx}
+                              className={`inline-flex items-center gap-1 font-medium ${
+                                h.level === 'error'
+                                  ? 'text-rose-700'
+                                  : h.level === 'warn'
+                                  ? 'text-amber-700'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {h.level === 'info' ? (
+                                <Info className="w-3 h-3 shrink-0" />
+                              ) : (
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                              )}
+                              {h.text}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -4070,6 +4690,7 @@ export function DailyEntryPage() {
 
             <div className="divide-y divide-slate-100">
               {genDraft.boilers.map((boiler, idx) => {
+                const bHrsVal = Number(boiler.operatingHours) || 0;
                 const steamVal = Number(boiler.steamKg) || 0;
                 const fQtyVal = Number(boiler.fuelQty) || 0;
                 const fCostVal = Number(boiler.fuelCost) || 0;
@@ -4084,6 +4705,10 @@ export function DailyEntryPage() {
                   boiler.fuelMode !== 'dual' && fQtyVal > 0 && steamVal > 0
                     ? steamVal / fQtyVal
                     : null;
+                const steamPerHr =
+                  bHrsVal > 0 && steamVal > 0 ? steamVal / bHrsVal : null;
+                const fuelPerHr =
+                  bHrsVal > 0 && fQtyVal > 0 ? fQtyVal / bHrsVal : null;
                 const pMode: SingleDeviceFuelMode =
                   boiler.fuelMode === 'dual'
                     ? normalizeSingleFuelMode(boiler.primaryFuelMode, boiler.fuelUnit)
@@ -4130,6 +4755,16 @@ export function DailyEntryPage() {
                         <span className="text-xs text-slate-500 font-medium">
                           · {formatDeviceFuelBadge(boiler)}
                         </span>
+                        {(steamPerHr !== null || fuelPerHr !== null) && (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-orange-800 tabular-nums">
+                            · <Clock className="w-3 h-3 text-orange-700" />
+                            {steamPerHr !== null ? `${formatNumber(steamPerHr, 1)} kg/hr` : ''}
+                            {steamPerHr !== null && fuelPerHr !== null ? ' · ' : ''}
+                            {fuelPerHr !== null
+                              ? `${formatNumber(fuelPerHr, 2)} ${boiler.fuelUnit}/hr`
+                              : ''}
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-3 text-xs text-orange-800 font-medium tabular-nums">
@@ -4156,10 +4791,36 @@ export function DailyEntryPage() {
                     <div
                       className={`grid grid-cols-1 gap-3.5 ${
                         unitCostUnlocked
-                          ? 'sm:grid-cols-2 lg:grid-cols-4'
-                          : 'sm:grid-cols-3'
+                          ? 'sm:grid-cols-2 lg:grid-cols-5'
+                          : 'sm:grid-cols-2 lg:grid-cols-4'
                       }`}
                     >
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                          Run Hours (0–24 hrs)
+                        </label>
+                        <div className="flex items-stretch h-10 rounded-lg border border-slate-300 bg-white overflow-hidden focus-within:ring-2 focus-within:ring-teal-600/20">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={boiler.operatingHours}
+                            onChange={(e) =>
+                              handleBoilerUnitChange(
+                                idx,
+                                'operatingHours',
+                                e.target.value
+                              )
+                            }
+                            placeholder="0"
+                            aria-label={`${boiler.deviceName} operating hours`}
+                            className="w-full min-w-0 px-3 text-sm text-right font-mono-num tabular-nums bg-transparent focus:outline-none"
+                          />
+                          <span className="px-2.5 bg-slate-50 border-l border-slate-200 text-xs text-slate-500 flex items-center shrink-0">
+                            hrs
+                          </span>
+                        </div>
+                      </div>
+
                       <div>
                         <label className="block text-[11px] font-medium text-slate-500 mb-1">
                           Steam Produced (kg)
@@ -4372,6 +5033,56 @@ export function DailyEntryPage() {
                         </div>
                       </div>
                     )}
+
+                    {(() => {
+                      const boilerHints: { level: 'error' | 'warn' | 'info'; text: string }[] = [];
+                      if (bHrsVal > 24) {
+                        boilerHints.push({
+                          level: 'error',
+                          text: 'Boiler operating hours cannot exceed 24 hrs/day.',
+                        });
+                      } else if (bHrsVal > 0 && steamVal === 0 && fQtyVal === 0) {
+                        boilerHints.push({
+                          level: 'warn',
+                          text: 'Run hours logged with 0 kg steam and 0 fuel — verify readings.',
+                        });
+                      } else if (steamVal > 0 && bHrsVal === 0) {
+                        boilerHints.push({
+                          level: 'info',
+                          text: 'Enter run hours to calculate kg/hr steam load and fuel/hr.',
+                        });
+                      }
+                      if (fQtyVal > 0 && totalBoilerFuelCost === 0) {
+                        boilerHints.push({
+                          level: 'warn',
+                          text: 'Fuel quantity logged with ৳0 fuel cost — verify fuel unit rate.',
+                        });
+                      }
+                      if (boilerHints.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] pt-0.5">
+                          {boilerHints.map((h, hIdx) => (
+                            <span
+                              key={hIdx}
+                              className={`inline-flex items-center gap-1 font-medium ${
+                                h.level === 'error'
+                                  ? 'text-rose-700'
+                                  : h.level === 'warn'
+                                  ? 'text-amber-700'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {h.level === 'info' ? (
+                                <Info className="w-3 h-3 shrink-0" />
+                              ) : (
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                              )}
+                              {h.text}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -4409,7 +5120,7 @@ export function DailyEntryPage() {
         </div>
 
         <div className="px-4 sm:px-5 py-4 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex-1">
+          <div className="flex-1 space-y-1">
             {feedback && (
               <div
                 className={`inline-flex items-center gap-2 text-sm font-medium ${
@@ -4424,12 +5135,40 @@ export function DailyEntryPage() {
                 <span>{feedback.text}</span>
               </div>
             )}
+            {!feedback && (draftHoursCompleteness.eligible > 0 || draftHoursCompleteness.warnings > 0) && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 tabular-nums">
+                {draftHoursCompleteness.eligible > 0 && (
+                  <span
+                    className={`inline-flex items-center gap-1.5 ${
+                      draftHoursCompleteness.filled === draftHoursCompleteness.eligible
+                        ? 'text-emerald-700 font-medium'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    <Clock className="w-3.5 h-3.5 shrink-0" />
+                    Run Hrs logged:{' '}
+                    <strong className="font-mono-num">
+                      {draftHoursCompleteness.filled}/{draftHoursCompleteness.eligible}
+                    </strong>{' '}
+                    active assets
+                  </span>
+                )}
+                {draftHoursCompleteness.warnings > 0 && (
+                  <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    {draftHoursCompleteness.warnings} row check
+                    {draftHoursCompleteness.warnings === 1 ? '' : 's'}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             {profile?.role === 'admin' &&
               sheetsConfig &&
-              sheetsConfig.syncMode !== 'appsScript' && (
+              sheetsConfig.syncMode !== 'appsScript' &&
+              sheetsConfig.autoSyncEnabled === false && (
                 <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
                   <input
                     type="checkbox"
@@ -4561,6 +5300,8 @@ export function DailyEntryPage() {
                           <th className="py-2 px-4 sm:px-5">Factory</th>
                           <th className="py-2 px-4">Utility</th>
                           <th className="py-2 px-4 text-right">Usage</th>
+                          <th className="py-2 px-4 text-right">Run Hrs</th>
+                          <th className="py-2 px-4 text-right">Rate/Hr</th>
                           <th className="py-2 px-4 text-right">Unit Rate</th>
                           <th className="py-2 px-4 text-right">Cost</th>
                           <th className="py-2 px-4 sm:px-5 text-right">Actions</th>
@@ -4575,6 +5316,11 @@ export function DailyEntryPage() {
                           const unitCost =
                             entry.consumption > 0
                               ? entry.cost / entry.consumption
+                              : null;
+                          const entryHrs = Number(entry.operatingHours) || 0;
+                          const ratePerHr =
+                            entryHrs > 0 && entry.consumption > 0
+                              ? entry.consumption / entryHrs
                               : null;
 
                           return (
@@ -4595,6 +5341,14 @@ export function DailyEntryPage() {
                               </td>
                               <td className="py-2 px-4 text-right tabular-nums text-slate-800 whitespace-nowrap">
                                 {formatNumber(entry.consumption)} {unitLabel}
+                              </td>
+                              <td className="py-2 px-4 text-right tabular-nums text-slate-600 whitespace-nowrap">
+                                {entryHrs > 0 ? `${formatNumber(entryHrs, 1)} hr` : '—'}
+                              </td>
+                              <td className="py-2 px-4 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                                {ratePerHr !== null
+                                  ? `${formatNumber(ratePerHr, 2)} ${unitLabel}/hr`
+                                  : '—'}
                               </td>
                               <td className="py-2 px-4 text-right tabular-nums text-teal-800 font-medium whitespace-nowrap">
                                 {unitCost !== null
@@ -4666,6 +5420,7 @@ export function DailyEntryPage() {
                               ...(parsedHistoryUnits.gasGenUnits || []),
                             ];
                       const histBoilers = parsedHistoryUnits.boilerUnits || [];
+                      const histSolars = parsedHistoryUnits.solarUnitDetails || [];
 
                       return (
                         <div
@@ -4687,7 +5442,10 @@ export function DailyEntryPage() {
                                         : r.tariff === 'offPeak'
                                         ? ' Off-Peak'
                                         : '';
-                                    return `${r.provider}${t}: ${formatNumber(r.kwh)} kWh`;
+                                    const rHrs = Number(r.operatingHours) || 0;
+                                    return `${r.provider}${t}: ${formatNumber(r.kwh)} kWh${
+                                      rHrs > 0 ? ` / ${formatNumber(rHrs, 1)}h` : ''
+                                    }`;
                                   })
                                   .join(' · ')}
                                 )
@@ -4696,12 +5454,19 @@ export function DailyEntryPage() {
                             {histGenerators.length > 0 ? (
                               histGenerators.map((g, gIdx) => {
                                 const gCost = getGenReadingTotalCost(g);
-                                if ((g.kwh || 0) <= 0 && gCost <= 0) return null;
+                                const gHrs = Number(g.operatingHours) || 0;
+                                if ((g.kwh || 0) <= 0 && gCost <= 0 && gHrs <= 0) return null;
+                                const gAvgKw =
+                                  gHrs > 0 && (g.kwh || 0) > 0
+                                    ? g.kwh / gHrs
+                                    : null;
                                 return (
                                   <span key={`hist-gen-${gIdx}`}>
                                     {g.deviceName || `Gen #${gIdx + 1}`}:{' '}
                                     <strong>{formatNumber(g.kwh)} kWh</strong>
-                                    {gCost > 0 && ` (${formatCurrency(gCost)})`}
+                                    {gHrs > 0 && ` · ${formatNumber(gHrs, 1)}h`}
+                                    {gAvgKw !== null && ` (${formatNumber(gAvgKw, 1)} kW)`}
+                                    {gCost > 0 && ` · ${formatCurrency(gCost)}`}
                                   </span>
                                 );
                               })
@@ -4709,14 +5474,31 @@ export function DailyEntryPage() {
                               (gen.generatorCount > 0 || gen.generatorKwh > 0) && (
                                 <span>
                                   Gen: <strong>{formatNumber(gen.generatorKwh)} kWh</strong>
+                                  {(gen.generatorOperatingHours || 0) > 0 &&
+                                    ` · ${formatNumber(Number(gen.generatorOperatingHours) || 0, 1)}h`}
                                   {genFuelTotalCost > 0 &&
                                     ` (${formatCurrency(genFuelTotalCost)})`}
                                 </span>
                               )
                             )}
-                            {(gen.solarKwh > 0 || gen.solarSystemCount > 0) && (
+                            {(gen.solarKwh > 0 ||
+                              gen.solarSystemCount > 0 ||
+                              (gen.solarOperatingHours || 0) > 0) && (
                               <span className="text-emerald-700">
                                 Solar: <strong>{formatNumber(gen.solarKwh)} kWh</strong>
+                                {(() => {
+                                  const sHrs =
+                                    gen.solarOperatingHours ||
+                                    histSolars.reduce(
+                                      (acc, s) => acc + (Number(s.operatingHours) || 0),
+                                      0
+                                    );
+                                  if (sHrs <= 0) return null;
+                                  const sKw = gen.solarKwh > 0 ? gen.solarKwh / sHrs : null;
+                                  return ` · ${formatNumber(sHrs, 1)}h${
+                                    sKw !== null ? ` (${formatNumber(sKw, 1)} kW)` : ''
+                                  }`;
+                                })()}
                                 {gen.solarSavings > 0 &&
                                   ` (Saved ${formatCurrency(gen.solarSavings)})`}
                               </span>
@@ -4724,12 +5506,19 @@ export function DailyEntryPage() {
                             {histBoilers.length > 0 ? (
                               histBoilers.map((b, bIdx) => {
                                 const bCost = getBoilerReadingTotalCost(b);
-                                if ((b.steamKg || 0) <= 0 && bCost <= 0) return null;
+                                const bHrs = Number(b.operatingHours) || 0;
+                                if ((b.steamKg || 0) <= 0 && bCost <= 0 && bHrs <= 0) return null;
+                                const bRateHr =
+                                  bHrs > 0 && (b.steamKg || 0) > 0
+                                    ? b.steamKg / bHrs
+                                    : null;
                                 return (
                                   <span key={`hist-boiler-${bIdx}`}>
                                     {b.deviceName || `Boiler #${bIdx + 1}`}:{' '}
                                     <strong>{formatNumber(b.steamKg)} kg</strong>
-                                    {bCost > 0 && ` (${formatCurrency(bCost)})`}
+                                    {bHrs > 0 && ` · ${formatNumber(bHrs, 1)}h`}
+                                    {bRateHr !== null && ` (${formatNumber(bRateHr, 1)} kg/hr)`}
+                                    {bCost > 0 && ` · ${formatCurrency(bCost)}`}
                                   </span>
                                 );
                               })
@@ -4737,6 +5526,8 @@ export function DailyEntryPage() {
                               (gen.boilerCount > 0 || gen.steamKg > 0 || gen.boilerFuelCost > 0) && (
                                 <span>
                                   Steam: <strong>{formatNumber(gen.steamKg)} kg</strong>
+                                  {(gen.boilerOperatingHours || 0) > 0 &&
+                                    ` · ${formatNumber(Number(gen.boilerOperatingHours) || 0, 1)}h`}
                                   {gen.boilerFuelCost > 0 &&
                                     ` (${formatCurrency(gen.boilerFuelCost)})`}
                                   {steamRate !== null &&
@@ -4952,12 +5743,12 @@ export function DailyEntryPage() {
           open={syncModalOpen}
           spreadsheetTitle={sheetsConfig.spreadsheetTitle}
           sheetName={sheetsConfig.sheetName}
-          recordCount={entries.length}
+          recordCount={entries.length + generationEntries.length}
           syncing={syncingSheets}
           onConfirm={() => void handleConfirmSyncSheets()}
           onCancel={() => setSyncModalOpen(false)}
         />
       )}
-    </div>
+    </motion.div>
   );
 }

@@ -65,6 +65,27 @@
           "maxLength": 40,
           "description": "Optional employee ID code."
         },
+        "dailyMailEnabled": {
+          "type": "boolean",
+          "description": "Whether automated daily summary report emails are enabled for this user."
+        },
+        "dailyMailEmail": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Designated recipient email address for daily push utility reports (private PII, never synced to userDirectory)."
+        },
+        "dailyMailTime": {
+          "type": "string",
+          "maxLength": 5,
+          "pattern": "^$|^([01]\\d|2[0-3]):[0-5]\\d$",
+          "description": "Scheduled daily push report delivery time in 24-hour HH:mm format."
+        },
+        "lastDailyMailSentDate": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^$|^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "YYYY-MM-DD date of the latest sent daily push report."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -308,6 +329,10 @@
           "type": "number",
           "description": "Total cost in BDT (>= 0)."
         },
+        "operatingHours": {
+          "type": "number",
+          "description": "Daily operating/running duration in hours (0-24)."
+        },
         "note": {
           "type": "string",
           "maxLength": 300,
@@ -403,6 +428,29 @@
           "format": "date-time",
           "description": "Server timestamp of latest sync."
         },
+        "autoSyncEnabled": {
+          "type": "boolean",
+          "description": "Whether automatic background two-way Google Sheets sync is enabled."
+        },
+        "autoSyncIntervalSec": {
+          "type": "number",
+          "description": "Background Google Sheets polling interval in seconds (15-3600)."
+        },
+        "lastSyncedHash": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Canonical checksum of the dataset at the last completed sync for two-way change detection."
+        },
+        "lastSyncDirection": {
+          "type": "string",
+          "enum": ["push", "pull", "bidirectional", "none"],
+          "description": "Direction of the most recent completed sync."
+        },
+        "lastSyncSummary": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Human-readable summary of the latest sync action."
+        },
         "updatedBy": {
           "type": "string",
           "minLength": 1,
@@ -496,6 +544,10 @@
           "type": "number",
           "description": "Total boiler fuel cost in BDT (>= 0)."
         },
+        "boilerOperatingHours": {
+          "type": "number",
+          "description": "Sum of daily operating hours across all factory boilers (0-1000)."
+        },
         "generatorCount": {
           "type": "number",
           "description": "Number of generators operating at this factory (>= 0)."
@@ -516,6 +568,10 @@
         "generatorFuelCost": {
           "type": "number",
           "description": "Total generator fuel cost in BDT (>= 0)."
+        },
+        "generatorOperatingHours": {
+          "type": "number",
+          "description": "Sum of daily operating hours across all factory generators (0-1000)."
         },
         "dieselGeneratorCount": {
           "type": "number",
@@ -561,6 +617,10 @@
           "type": "number",
           "description": "Estimated electricity cost savings from solar generation in BDT (>= 0)."
         },
+        "solarOperatingHours": {
+          "type": "number",
+          "description": "Sum of daily generation hours across all solar systems (0-1000)."
+        },
         "gridProviderBreakdown": {
           "type": "string",
           "maxLength": 2500,
@@ -568,8 +628,8 @@
         },
         "unitReadings": {
           "type": "string",
-          "maxLength": 12000,
-          "description": "JSON summary of per-unit Boiler, Generator (including dual-fuel), and Solar readings with custom device names and per-unit fuel."
+          "maxLength": 16000,
+          "description": "JSON summary of per-unit Boiler, Generator (including dual-fuel), and Solar readings with custom device names, running hours, and per-unit fuel."
         },
         "note": {
           "type": "string",
@@ -622,6 +682,282 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "CompanyInfrastructure": {
+      "title": "CompanyInfrastructure",
+      "description": "Plant-level water supply lines, deep pump counts & diameters, gas line specs, and substation overview per factory.",
+      "type": "object",
+      "properties": {
+        "companyName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Parent factory/company name."
+        },
+        "totalDeepPumps": {
+          "type": "number",
+          "description": "Total number of deep tube wells / submersible pumps (0-500)."
+        },
+        "deepPumpDia": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Deep pump / borewell pipe diameter (e.g., 6 inch / 8 inch)."
+        },
+        "waterLineCount": {
+          "type": "number",
+          "description": "Total number of main water supply lines (0-500)."
+        },
+        "waterLineDia": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Main water supply line / header pipe diameter (e.g., 4 inch / 110mm)."
+        },
+        "waterTankCapacity": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Total water storage / reservoir tank capacity."
+        },
+        "wtpEtpCapacity": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Water Treatment Plant (WTP) and Effluent Treatment Plant (ETP) capacity."
+        },
+        "gasLineSpec": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Gas supply line diameter and RMS pressure."
+        },
+        "substationCapacity": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Substation and transformer rated capacity."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "General plant infrastructure and utility piping notes."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of user who last updated this infrastructure summary."
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Display name of user who last updated this summary."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": [
+        "companyName",
+        "totalDeepPumps",
+        "deepPumpDia",
+        "waterLineCount",
+        "waterLineDia",
+        "updatedBy",
+        "updatedByName",
+        "updatedAt"
+      ]
+    },
+    "EquipmentSpec": {
+      "title": "EquipmentSpec",
+      "description": "Technical specification record for a generator, boiler, deep pump, water line, solar array, transformer, or other plant equipment.",
+      "type": "object",
+      "properties": {
+        "companyName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Parent factory/company name."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["generator", "boiler", "deep_pump", "water_line", "solar", "transformer", "other"],
+          "description": "Equipment or utility line category."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Equipment or line display name."
+        },
+        "tagCode": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Optional asset tag or line code."
+        },
+        "brandModel": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Manufacturer brand and model number."
+        },
+        "capacity": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Rated capacity (kVA, kW, Ton/hr, HP, m3/hr, kWp)."
+        },
+        "pipeDiaOrSize": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Pipe diameter, borewell size, or physical dimensions."
+        },
+        "fuelOrPowerSource": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Fuel type or electrical power supply specification."
+        },
+        "operatingSpec": {
+          "type": "string",
+          "maxLength": 180,
+          "description": "Operating parameters such as RPM, voltage, pressure, depth, or head."
+        },
+        "serialOrYear": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Serial number and/or installation year."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "standby", "maintenance", "inactive"],
+          "description": "Current operational status."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Additional technical remarks."
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of user who created the specification."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of user who last updated the specification."
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Display name of user who last updated the specification."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "companyName",
+        "category",
+        "name",
+        "status",
+        "createdBy",
+        "updatedBy",
+        "updatedByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FactoryBudget": {
+      "title": "FactoryBudget",
+      "description": "Monthly utility spend, carbon cap, and renewable solar targets per factory.",
+      "type": "object",
+      "properties": {
+        "companyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent company document ID."
+        },
+        "companyName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Parent factory/company display name."
+        },
+        "month": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7,
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])$",
+          "description": "Target billing month in YYYY-MM format."
+        },
+        "monthlySpendLimit": {
+          "type": "number",
+          "description": "Monthly utility and plant fuel spend cap in BDT (0-100000000000)."
+        },
+        "monthlyCarbonCapKg": {
+          "type": "number",
+          "description": "Optional monthly Scope 1+2 CO2e target cap in kg (0-1000000000)."
+        },
+        "targetSolarSharePct": {
+          "type": "number",
+          "description": "Target solar share of total plant electricity percentage (0-100)."
+        },
+        "alertThresholdPct": {
+          "type": "number",
+          "description": "Budget warning alert threshold percentage (50-100)."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional budget planning notes or tariff assumptions."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of admin who created or updated this budget."
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Display name of admin who saved this budget."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "companyId",
+        "companyName",
+        "month",
+        "monthlySpendLimit",
+        "alertThresholdPct",
+        "updatedBy",
+        "updatedByName",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -632,6 +968,14 @@
     "/companies/{companyId}": {
       "schema": { "$ref": "#/entities/Company" },
       "description": "List of companies in the group."
+    },
+    "/companies/{companyId}/infrastructure/{docId}": {
+      "schema": { "$ref": "#/entities/CompanyInfrastructure" },
+      "description": "Plant water line, deep pump count & diameter, and utility infrastructure overview for a factory."
+    },
+    "/companies/{companyId}/equipmentSpecs/{specId}": {
+      "schema": { "$ref": "#/entities/EquipmentSpec" },
+      "description": "Technical specifications for individual generators, boilers, deep pumps, water lines, and plant assets."
     },
     "/utilities/{utilityId}": {
       "schema": { "$ref": "#/entities/Utility" },
@@ -644,6 +988,10 @@
     "/generationEntries/{genId}": {
       "schema": { "$ref": "#/entities/GenerationEntry" },
       "description": "Daily plant boiler steam, generator power, and solar electricity generation logs."
+    },
+    "/budgets/{budgetId}": {
+      "schema": { "$ref": "#/entities/FactoryBudget" },
+      "description": "Monthly factory utility spend, carbon emission, and solar share targets."
     },
     "/integrations/{docId}": {
       "schema": { "$ref": "#/entities/GoogleSheetsConfig" },

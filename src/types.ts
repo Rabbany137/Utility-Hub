@@ -28,6 +28,10 @@ export interface UserProfile {
   designation?: string;
   phone?: string;
   employeeId?: string;
+  dailyMailEnabled?: boolean;
+  dailyMailEmail?: string;
+  dailyMailTime?: string;
+  lastDailyMailSentDate?: string;
   createdAt: Timestamp | null;
 }
 
@@ -70,6 +74,10 @@ export type AdminUserUpdates = Partial<
     | 'designation'
     | 'phone'
     | 'employeeId'
+    | 'dailyMailEnabled'
+    | 'dailyMailEmail'
+    | 'dailyMailTime'
+    | 'lastDailyMailSentDate'
   >
 >;
 
@@ -143,6 +151,7 @@ export interface UtilityEntry {
   unit: string;
   consumption: number;
   cost: number;
+  operatingHours?: number;
   note: string;
   enteredBy: string;
   enteredByName: string;
@@ -151,6 +160,7 @@ export interface UtilityEntry {
 }
 
 export type GoogleSheetsSyncMode = 'oauth' | 'appsScript';
+export type GoogleSheetsSyncDirection = 'push' | 'pull' | 'bidirectional' | 'none';
 
 export interface GoogleSheetsConfig {
   spreadsheetId: string;
@@ -159,10 +169,45 @@ export interface GoogleSheetsConfig {
   sheetName: string;
   syncMode?: GoogleSheetsSyncMode;
   webhookUrl?: string;
+  autoSyncEnabled?: boolean;
+  autoSyncIntervalSec?: number;
+  lastSyncedHash?: string;
+  lastSyncDirection?: GoogleSheetsSyncDirection;
+  lastSyncSummary?: string;
   lastSyncedCount: number;
   lastSyncedAt: Timestamp | null;
   updatedBy: string;
   updatedAt: Timestamp | null;
+}
+
+export type AutoSyncStatusKind =
+  | 'idle'
+  | 'syncing'
+  | 'synced'
+  | 'needsAuth'
+  | 'error'
+  | 'disabled';
+
+export interface AutoSyncState {
+  status: AutoSyncStatusKind;
+  lastResultText: string;
+  lastSyncedAt: Date | null;
+  lastDirection: GoogleSheetsSyncDirection;
+  lastPulledCreated: number;
+  lastPulledUpdated: number;
+  lastPushedRows: number;
+}
+
+export interface TwoWaySyncResult {
+  direction: GoogleSheetsSyncDirection;
+  pushedRows: number;
+  pulledCreated: number;
+  pulledUpdated: number;
+  pulledGenerationUpdated: number;
+  createdCompanies: number;
+  skipped: number;
+  summary: string;
+  changed: boolean;
 }
 
 export interface UserUnitRate {
@@ -179,6 +224,7 @@ export interface GridProviderReading {
   provider: string;
   tariff?: GridTariffPeriod;
   kwh: number;
+  operatingHours?: number;
   unitCost: number;
   cost: number;
 }
@@ -190,6 +236,7 @@ export interface BoilerUnitReading {
   fuelMode?: DeviceFuelMode;
   primaryFuelMode?: SingleDeviceFuelMode;
   secondaryFuelMode?: SingleDeviceFuelMode;
+  operatingHours?: number;
   steamKg: number;
   fuelQty: number;
   fuelUnit: string;
@@ -209,6 +256,7 @@ export interface GeneratorUnitReading {
   fuelMode?: DeviceFuelMode;
   primaryFuelMode?: SingleDeviceFuelMode;
   secondaryFuelMode?: SingleDeviceFuelMode;
+  operatingHours?: number;
   kwh: number;
   fuelQty: number;
   fuelUnit: string;
@@ -225,6 +273,7 @@ export interface SolarUnitReading {
   unitIndex: number;
   deviceId?: string;
   deviceName?: string;
+  operatingHours?: number;
   kwh: number;
   unitCost?: number;
   savings: number;
@@ -251,11 +300,13 @@ export interface GenerationEntry {
   boilerFuelQty: number;
   boilerFuelUnit: string;
   boilerFuelCost: number;
+  boilerOperatingHours?: number;
   generatorCount: number;
   generatorKwh: number;
   generatorFuelQty: number;
   generatorFuelUnit: string;
   generatorFuelCost: number;
+  generatorOperatingHours?: number;
   dieselGeneratorCount?: number;
   dieselGenKwh?: number;
   dieselFuelQty?: number;
@@ -267,6 +318,7 @@ export interface GenerationEntry {
   solarSystemCount: number;
   solarKwh: number;
   solarSavings: number;
+  solarOperatingHours?: number;
   gridProviderBreakdown?: string;
   unitReadings?: string;
   note: string;
@@ -276,4 +328,85 @@ export interface GenerationEntry {
   updatedAt: Timestamp | null;
 }
 
-export type ActivePage = 'dashboard' | 'entry' | 'profile' | 'admin';
+export type EquipmentSpecCategory =
+  | 'generator'
+  | 'boiler'
+  | 'deep_pump'
+  | 'water_line'
+  | 'solar'
+  | 'transformer'
+  | 'other';
+
+export type EquipmentStatus = 'active' | 'standby' | 'maintenance' | 'inactive';
+
+export interface CompanyInfrastructure {
+  companyName: string;
+  totalDeepPumps: number;
+  deepPumpDia: string;
+  waterLineCount: number;
+  waterLineDia: string;
+  waterTankCapacity?: string;
+  wtpEtpCapacity?: string;
+  gasLineSpec?: string;
+  substationCapacity?: string;
+  notes?: string;
+  updatedBy: string;
+  updatedByName: string;
+  updatedAt: Timestamp | null;
+}
+
+export interface EquipmentSpecItem {
+  id: string;
+  companyName: string;
+  category: EquipmentSpecCategory;
+  name: string;
+  tagCode?: string;
+  brandModel?: string;
+  capacity?: string;
+  pipeDiaOrSize?: string;
+  fuelOrPowerSource?: string;
+  operatingSpec?: string;
+  serialOrYear?: string;
+  status: EquipmentStatus;
+  notes?: string;
+  createdBy: string;
+  updatedBy: string;
+  updatedByName: string;
+  createdAt: Timestamp | null;
+  updatedAt: Timestamp | null;
+}
+
+export interface FactoryBudget {
+  id: string;
+  companyId: string;
+  companyName: string;
+  month: string; // YYYY-MM
+  monthlySpendLimit: number;
+  monthlyCarbonCapKg?: number;
+  targetSolarSharePct?: number;
+  alertThresholdPct: number;
+  notes?: string;
+  updatedBy: string;
+  updatedByName: string;
+  createdAt: Timestamp | null;
+  updatedAt: Timestamp | null;
+}
+
+export interface FactoryBudgetInput {
+  companyId: string;
+  companyName: string;
+  month: string;
+  monthlySpendLimit: number;
+  monthlyCarbonCapKg?: number;
+  targetSolarSharePct?: number;
+  alertThresholdPct: number;
+  notes?: string;
+}
+
+export type ActivePage =
+  | 'dashboard'
+  | 'entry'
+  | 'reports'
+  | 'forecast'
+  | 'profile'
+  | 'admin';

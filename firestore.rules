@@ -76,7 +76,9 @@ service cloud.firestore {
       return data.keys().hasAll(['name', 'email', 'status', 'role', 'companies', 'createdAt'])
         && data.keys().hasOnly([
           'name', 'email', 'status', 'role', 'companies', 'viewCompanies', 'allowedUtilities',
-          'organization', 'department', 'designation', 'phone', 'employeeId', 'createdAt'
+          'organization', 'department', 'designation', 'phone', 'employeeId',
+          'dailyMailEnabled', 'dailyMailEmail', 'dailyMailTime', 'lastDailyMailSentDate',
+          'createdAt'
         ])
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 150
@@ -99,6 +101,10 @@ service cloud.firestore {
         && (!('designation' in data) || (data.designation is string && data.designation.size() <= 80))
         && (!('phone' in data) || (data.phone is string && data.phone.size() <= 30))
         && (!('employeeId' in data) || (data.employeeId is string && data.employeeId.size() <= 40))
+        && (!('dailyMailEnabled' in data) || data.dailyMailEnabled is bool)
+        && (!('dailyMailEmail' in data) || (data.dailyMailEmail is string && data.dailyMailEmail.size() <= 150))
+        && (!('dailyMailTime' in data) || (data.dailyMailTime is string && (data.dailyMailTime == '' || (data.dailyMailTime.size() == 5 && data.dailyMailTime.matches('^([01]\\d|2[0-3]):[0-5]\\d$')))))
+        && (!('lastDailyMailSentDate' in data) || (data.lastDailyMailSentDate is string && (data.lastDailyMailSentDate == '' || (data.lastDailyMailSentDate.size() == 10 && data.lastDailyMailSentDate.matches('^\\d{4}-\\d{2}-\\d{2}$')))))
         && data.createdAt is timestamp;
     }
 
@@ -166,6 +172,60 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidCompanyInfrastructure(data) {
+      return data.keys().hasAll([
+          'companyName', 'totalDeepPumps', 'deepPumpDia', 'waterLineCount', 'waterLineDia',
+          'updatedBy', 'updatedByName', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'companyName', 'totalDeepPumps', 'deepPumpDia', 'waterLineCount', 'waterLineDia',
+          'waterTankCapacity', 'wtpEtpCapacity', 'gasLineSpec', 'substationCapacity', 'notes',
+          'updatedBy', 'updatedByName', 'updatedAt'
+        ])
+        && data.companyName is string && data.companyName.size() >= 1 && data.companyName.size() <= 100
+        && (data.totalDeepPumps is int || data.totalDeepPumps is float) && data.totalDeepPumps >= 0 && data.totalDeepPumps <= 500
+        && data.deepPumpDia is string && data.deepPumpDia.size() <= 100
+        && (data.waterLineCount is int || data.waterLineCount is float) && data.waterLineCount >= 0 && data.waterLineCount <= 500
+        && data.waterLineDia is string && data.waterLineDia.size() <= 100
+        && (!('waterTankCapacity' in data) || (data.waterTankCapacity is string && data.waterTankCapacity.size() <= 120))
+        && (!('wtpEtpCapacity' in data) || (data.wtpEtpCapacity is string && data.wtpEtpCapacity.size() <= 120))
+        && (!('gasLineSpec' in data) || (data.gasLineSpec is string && data.gasLineSpec.size() <= 120))
+        && (!('substationCapacity' in data) || (data.substationCapacity is string && data.substationCapacity.size() <= 120))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && isValidId(data.updatedBy)
+        && data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 100
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEquipmentSpec(data) {
+      return data.keys().hasAll([
+          'companyName', 'category', 'name', 'status',
+          'createdBy', 'updatedBy', 'updatedByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'companyName', 'category', 'name', 'tagCode', 'brandModel', 'capacity',
+          'pipeDiaOrSize', 'fuelOrPowerSource', 'operatingSpec', 'serialOrYear',
+          'status', 'notes', 'createdBy', 'updatedBy', 'updatedByName', 'createdAt', 'updatedAt'
+        ])
+        && data.companyName is string && data.companyName.size() >= 1 && data.companyName.size() <= 100
+        && data.category in ['generator', 'boiler', 'deep_pump', 'water_line', 'solar', 'transformer', 'other']
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && (!('tagCode' in data) || (data.tagCode is string && data.tagCode.size() <= 40))
+        && (!('brandModel' in data) || (data.brandModel is string && data.brandModel.size() <= 120))
+        && (!('capacity' in data) || (data.capacity is string && data.capacity.size() <= 100))
+        && (!('pipeDiaOrSize' in data) || (data.pipeDiaOrSize is string && data.pipeDiaOrSize.size() <= 100))
+        && (!('fuelOrPowerSource' in data) || (data.fuelOrPowerSource is string && data.fuelOrPowerSource.size() <= 80))
+        && (!('operatingSpec' in data) || (data.operatingSpec is string && data.operatingSpec.size() <= 180))
+        && (!('serialOrYear' in data) || (data.serialOrYear is string && data.serialOrYear.size() <= 80))
+        && data.status in ['active', 'standby', 'maintenance', 'inactive']
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && isValidId(data.createdBy)
+        && isValidId(data.updatedBy)
+        && data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidUtility(data) {
       return data.keys().hasAll(['name', 'unit', 'color', 'order', 'createdBy', 'createdAt'])
         && data.keys().hasOnly(['name', 'unit', 'color', 'order', 'createdBy', 'createdAt'])
@@ -179,7 +239,7 @@ service cloud.firestore {
 
     function isValidUtilityEntry(data) {
       return data.keys().hasAll(['date', 'company', 'utilityId', 'utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['date', 'company', 'utilityId', 'utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['date', 'company', 'utilityId', 'utilityName', 'unit', 'consumption', 'cost', 'operatingHours', 'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'])
         && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
         && data.company is string && data.company.size() >= 1 && data.company.size() <= 100
         && isValidId(data.utilityId)
@@ -187,6 +247,7 @@ service cloud.firestore {
         && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30
         && (data.consumption is int || data.consumption is float) && data.consumption >= 0 && data.consumption <= 1000000000
         && (data.cost is int || data.cost is float) && data.cost >= 0 && data.cost <= 100000000000
+        && (!('operatingHours' in data) || ((data.operatingHours is int || data.operatingHours is float) && data.operatingHours >= 0 && data.operatingHours <= 24))
         && data.note is string && data.note.size() <= 300
         && isValidId(data.enteredBy)
         && data.enteredByName is string && data.enteredByName.size() >= 1 && data.enteredByName.size() <= 100
@@ -196,9 +257,19 @@ service cloud.firestore {
 
     function isValidGoogleSheetsConfig(data) {
       return data.keys().hasAll(['spreadsheetId', 'spreadsheetUrl', 'spreadsheetTitle', 'sheetName', 'lastSyncedCount', 'lastSyncedAt', 'updatedBy', 'updatedAt'])
-        && data.keys().hasOnly(['spreadsheetId', 'spreadsheetUrl', 'spreadsheetTitle', 'sheetName', 'lastSyncedCount', 'lastSyncedAt', 'updatedBy', 'updatedAt', 'syncMode', 'webhookUrl'])
+        && data.keys().hasOnly([
+          'spreadsheetId', 'spreadsheetUrl', 'spreadsheetTitle', 'sheetName',
+          'lastSyncedCount', 'lastSyncedAt', 'updatedBy', 'updatedAt',
+          'syncMode', 'webhookUrl',
+          'autoSyncEnabled', 'autoSyncIntervalSec', 'lastSyncedHash', 'lastSyncDirection', 'lastSyncSummary'
+        ])
         && (!('syncMode' in data) || data.syncMode in ['oauth', 'appsScript'])
         && (!('webhookUrl' in data) || (data.webhookUrl is string && data.webhookUrl.size() <= 300 && (data.webhookUrl == '' || data.webhookUrl.matches('^https://script\\.google\\.com/macros/s/[a-zA-Z0-9_\\-]+/exec$'))))
+        && (!('autoSyncEnabled' in data) || data.autoSyncEnabled is bool)
+        && (!('autoSyncIntervalSec' in data) || ((data.autoSyncIntervalSec is int || data.autoSyncIntervalSec is float) && data.autoSyncIntervalSec >= 15 && data.autoSyncIntervalSec <= 3600))
+        && (!('lastSyncedHash' in data) || (data.lastSyncedHash is string && data.lastSyncedHash.size() <= 128))
+        && (!('lastSyncDirection' in data) || data.lastSyncDirection in ['push', 'pull', 'bidirectional', 'none'])
+        && (!('lastSyncSummary' in data) || (data.lastSyncSummary is string && data.lastSyncSummary.size() <= 240))
         && data.spreadsheetId is string && data.spreadsheetId.size() >= 5 && data.spreadsheetId.size() <= 128 && data.spreadsheetId.matches('^[a-zA-Z0-9_\\-]+$')
         && data.spreadsheetUrl is string && data.spreadsheetUrl.size() <= 300 && (
           data.spreadsheetUrl.matches('^https://docs\\.google\\.com/spreadsheets/.*')
@@ -231,11 +302,11 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'date', 'company',
-          'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost',
-          'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost',
+          'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost', 'boilerOperatingHours',
+          'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost', 'generatorOperatingHours',
           'dieselGeneratorCount', 'dieselGenKwh', 'dieselFuelQty', 'dieselFuelCost',
           'gasGeneratorCount', 'gasGenKwh', 'gasFuelQty', 'gasFuelCost',
-          'solarSystemCount', 'solarKwh', 'solarSavings',
+          'solarSystemCount', 'solarKwh', 'solarSavings', 'solarOperatingHours',
           'gridProviderBreakdown', 'unitReadings',
           'note', 'enteredBy', 'enteredByName', 'createdAt', 'updatedAt'
         ])
@@ -246,11 +317,13 @@ service cloud.firestore {
         && (data.boilerFuelQty is int || data.boilerFuelQty is float) && data.boilerFuelQty >= 0 && data.boilerFuelQty <= 1000000000
         && data.boilerFuelUnit is string && data.boilerFuelUnit.size() <= 30
         && (data.boilerFuelCost is int || data.boilerFuelCost is float) && data.boilerFuelCost >= 0 && data.boilerFuelCost <= 100000000000
+        && (!('boilerOperatingHours' in data) || ((data.boilerOperatingHours is int || data.boilerOperatingHours is float) && data.boilerOperatingHours >= 0 && data.boilerOperatingHours <= 1000))
         && (data.generatorCount is int || data.generatorCount is float) && data.generatorCount >= 0 && data.generatorCount <= 500
         && (data.generatorKwh is int || data.generatorKwh is float) && data.generatorKwh >= 0 && data.generatorKwh <= 1000000000
         && (data.generatorFuelQty is int || data.generatorFuelQty is float) && data.generatorFuelQty >= 0 && data.generatorFuelQty <= 1000000000
         && data.generatorFuelUnit is string && data.generatorFuelUnit.size() <= 30
         && (data.generatorFuelCost is int || data.generatorFuelCost is float) && data.generatorFuelCost >= 0 && data.generatorFuelCost <= 100000000000
+        && (!('generatorOperatingHours' in data) || ((data.generatorOperatingHours is int || data.generatorOperatingHours is float) && data.generatorOperatingHours >= 0 && data.generatorOperatingHours <= 1000))
         && (!('dieselGeneratorCount' in data) || ((data.dieselGeneratorCount is int || data.dieselGeneratorCount is float) && data.dieselGeneratorCount >= 0 && data.dieselGeneratorCount <= 500))
         && (!('dieselGenKwh' in data) || ((data.dieselGenKwh is int || data.dieselGenKwh is float) && data.dieselGenKwh >= 0 && data.dieselGenKwh <= 1000000000))
         && (!('dieselFuelQty' in data) || ((data.dieselFuelQty is int || data.dieselFuelQty is float) && data.dieselFuelQty >= 0 && data.dieselFuelQty <= 1000000000))
@@ -262,11 +335,36 @@ service cloud.firestore {
         && (data.solarSystemCount is int || data.solarSystemCount is float) && data.solarSystemCount >= 0 && data.solarSystemCount <= 500
         && (data.solarKwh is int || data.solarKwh is float) && data.solarKwh >= 0 && data.solarKwh <= 1000000000
         && (data.solarSavings is int || data.solarSavings is float) && data.solarSavings >= 0 && data.solarSavings <= 100000000000
+        && (!('solarOperatingHours' in data) || ((data.solarOperatingHours is int || data.solarOperatingHours is float) && data.solarOperatingHours >= 0 && data.solarOperatingHours <= 1000))
         && (!('gridProviderBreakdown' in data) || (data.gridProviderBreakdown is string && data.gridProviderBreakdown.size() <= 2500))
-        && (!('unitReadings' in data) || (data.unitReadings is string && data.unitReadings.size() <= 12000))
+        && (!('unitReadings' in data) || (data.unitReadings is string && data.unitReadings.size() <= 16000))
         && data.note is string && data.note.size() <= 300
         && isValidId(data.enteredBy)
         && data.enteredByName is string && data.enteredByName.size() >= 1 && data.enteredByName.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFactoryBudget(data) {
+      return data.keys().hasAll([
+          'companyId', 'companyName', 'month', 'monthlySpendLimit',
+          'alertThresholdPct', 'updatedBy', 'updatedByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'companyId', 'companyName', 'month', 'monthlySpendLimit',
+          'monthlyCarbonCapKg', 'targetSolarSharePct', 'alertThresholdPct',
+          'notes', 'updatedBy', 'updatedByName', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.companyId)
+        && data.companyName is string && data.companyName.size() >= 1 && data.companyName.size() <= 100
+        && data.month is string && data.month.size() == 7 && data.month.matches('^\\d{4}-(0[1-9]|1[0-2])$')
+        && (data.monthlySpendLimit is int || data.monthlySpendLimit is float) && data.monthlySpendLimit >= 0 && data.monthlySpendLimit <= 100000000000
+        && (!('monthlyCarbonCapKg' in data) || ((data.monthlyCarbonCapKg is int || data.monthlyCarbonCapKg is float) && data.monthlyCarbonCapKg >= 0 && data.monthlyCarbonCapKg <= 1000000000))
+        && (!('targetSolarSharePct' in data) || ((data.targetSolarSharePct is int || data.targetSolarSharePct is float) && data.targetSolarSharePct >= 0 && data.targetSolarSharePct <= 100))
+        && (data.alertThresholdPct is int || data.alertThresholdPct is float) && data.alertThresholdPct >= 50 && data.alertThresholdPct <= 100
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && isValidId(data.updatedBy)
+        && data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 100
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -298,12 +396,14 @@ service cloud.firestore {
         && (
           (isAdmin() && !isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
             'status', 'role', 'companies', 'viewCompanies', 'allowedUtilities',
-            'name', 'organization', 'department', 'designation', 'phone', 'employeeId'
+            'name', 'organization', 'department', 'designation', 'phone', 'employeeId',
+            'dailyMailEnabled', 'dailyMailEmail', 'dailyMailTime', 'lastDailyMailSentDate'
           ]))
           ||
           (isAdmin() && isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
             'name', 'companies', 'viewCompanies', 'allowedUtilities',
-            'organization', 'department', 'designation', 'phone', 'employeeId'
+            'organization', 'department', 'designation', 'phone', 'employeeId',
+            'dailyMailEnabled', 'dailyMailEmail', 'dailyMailTime', 'lastDailyMailSentDate'
           ]))
           ||
           (isOwner(uid) && incoming().diff(existing()).affectedKeys().hasOnly([
@@ -432,34 +532,117 @@ service cloud.firestore {
         && incoming().createdBy == request.auth.uid
         && incoming().createdAt == request.time;
 
-      allow update: if isValidId(companyId)
+      allow update: if isAdmin()
+        && isValidId(companyId)
         && isValidCompany(incoming())
         && incoming().createdBy == existing().createdBy
         && incoming().createdAt == existing().createdAt
-        && (
-          (
-            isAdmin()
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'name', 'equipmentConfigured', 'boilerCount', 'boilerFuelUnit',
-              'dieselGeneratorCount', 'gasGeneratorCount', 'solarCount',
-              'gridProviders', 'gridHasPeakOffPeak', 'deviceConfigs'
-            ])
-          )
-          ||
-          (
-            isApprovedUser()
-            && userDoc().role == 'entry'
-            && existing().name in userDoc().companies
-            && incoming().name == existing().name
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'equipmentConfigured', 'boilerCount', 'boilerFuelUnit',
-              'dieselGeneratorCount', 'gasGeneratorCount', 'solarCount',
-              'gridProviders', 'gridHasPeakOffPeak', 'deviceConfigs'
-            ])
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'equipmentConfigured', 'boilerCount', 'boilerFuelUnit',
+          'dieselGeneratorCount', 'gasGeneratorCount', 'solarCount',
+          'gridProviders', 'gridHasPeakOffPeak', 'deviceConfigs'
+        ]);
+
+      allow delete: if isAdmin() && isValidId(companyId);
+
+      match /infrastructure/{docId} {
+        allow get: if isValidId(companyId) && docId == 'summary' && (
+          (resource == null && isApprovedUser())
+          || (resource != null && (canViewCompany(existing().companyName) || canEnterForCompany(existing().companyName)))
+        );
+        allow list: if isApprovedUser() && (
+          isAdmin()
+          || (
+            resource.data.companyName is string
+            && (
+              (userDoc().role == 'entry' && resource.data.companyName in userDoc().companies)
+              || ('viewCompanies' in userDoc() && resource.data.companyName in userDoc().viewCompanies)
+            )
           )
         );
 
-      allow delete: if isAdmin() && isValidId(companyId);
+        allow create: if isVerified()
+          && isValidId(companyId)
+          && docId == 'summary'
+          && isValidCompanyInfrastructure(incoming())
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/companies/$(companyId))
+          && incoming().companyName == get(/databases/$(database)/documents/companies/$(companyId)).data.name
+          && canEnterForCompany(incoming().companyName);
+
+        allow update: if isVerified()
+          && isValidId(companyId)
+          && docId == 'summary'
+          && isValidCompanyInfrastructure(incoming())
+          && incoming().companyName == existing().companyName
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/companies/$(companyId))
+          && existing().companyName == get(/databases/$(database)/documents/companies/$(companyId)).data.name
+          && canEnterForCompany(existing().companyName)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'totalDeepPumps', 'deepPumpDia', 'waterLineCount', 'waterLineDia',
+            'waterTankCapacity', 'wtpEtpCapacity', 'gasLineSpec', 'substationCapacity',
+            'notes', 'updatedBy', 'updatedByName', 'updatedAt'
+          ]);
+
+        allow delete: if isAdmin() && isValidId(companyId) && docId == 'summary';
+      }
+
+      match /equipmentSpecs/{specId} {
+        allow get: if isValidId(companyId) && isValidId(specId) && (
+          (resource == null && isApprovedUser())
+          || (resource != null && (canViewCompany(existing().companyName) || canEnterForCompany(existing().companyName)))
+        );
+        allow list: if isApprovedUser() && (
+          isAdmin()
+          || (
+            resource.data.companyName is string
+            && (
+              (userDoc().role == 'entry' && resource.data.companyName in userDoc().companies)
+              || ('viewCompanies' in userDoc() && resource.data.companyName in userDoc().viewCompanies)
+            )
+          )
+        );
+
+        allow create: if isVerified()
+          && isValidId(companyId)
+          && isValidId(specId)
+          && isValidEquipmentSpec(incoming())
+          && incoming().createdBy == request.auth.uid
+          && incoming().updatedBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/companies/$(companyId))
+          && incoming().companyName == get(/databases/$(database)/documents/companies/$(companyId)).data.name
+          && canEnterForCompany(incoming().companyName);
+
+        allow update: if isVerified()
+          && isValidId(companyId)
+          && isValidId(specId)
+          && isValidEquipmentSpec(incoming())
+          && incoming().companyName == existing().companyName
+          && incoming().createdBy == existing().createdBy
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/companies/$(companyId))
+          && existing().companyName == get(/databases/$(database)/documents/companies/$(companyId)).data.name
+          && canEnterForCompany(existing().companyName)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'category', 'name', 'tagCode', 'brandModel', 'capacity',
+            'pipeDiaOrSize', 'fuelOrPowerSource', 'operatingSpec', 'serialOrYear',
+            'status', 'notes', 'updatedBy', 'updatedByName', 'updatedAt'
+          ]);
+
+        allow delete: if isVerified()
+          && isValidId(companyId)
+          && isValidId(specId)
+          && exists(/databases/$(database)/documents/companies/$(companyId))
+          && existing().companyName == get(/databases/$(database)/documents/companies/$(companyId)).data.name
+          && canEnterForCompany(existing().companyName);
+      }
     }
 
     match /utilities/{utilityId} {
@@ -512,14 +695,14 @@ service cloud.firestore {
           (
             incoming().company == existing().company
             && incoming().enteredBy == request.auth.uid
-            && incoming().diff(existing()).affectedKeys().hasOnly(['utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['utilityName', 'unit', 'consumption', 'cost', 'operatingHours', 'note', 'enteredBy', 'enteredByName', 'updatedAt'])
             && canEnterForCompany(existing().company)
           )
           ||
           (
             isAdmin()
             && (incoming().enteredBy == existing().enteredBy || incoming().enteredBy == request.auth.uid)
-            && incoming().diff(existing()).affectedKeys().hasOnly(['company', 'utilityName', 'unit', 'consumption', 'cost', 'note', 'enteredBy', 'enteredByName', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['company', 'utilityName', 'unit', 'consumption', 'cost', 'operatingHours', 'note', 'enteredBy', 'enteredByName', 'updatedAt'])
           )
         );
 
@@ -557,11 +740,11 @@ service cloud.firestore {
             incoming().company == existing().company
             && incoming().enteredBy == request.auth.uid
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost',
-              'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost',
+              'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost', 'boilerOperatingHours',
+              'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost', 'generatorOperatingHours',
               'dieselGeneratorCount', 'dieselGenKwh', 'dieselFuelQty', 'dieselFuelCost',
               'gasGeneratorCount', 'gasGenKwh', 'gasFuelQty', 'gasFuelCost',
-              'solarSystemCount', 'solarKwh', 'solarSavings',
+              'solarSystemCount', 'solarKwh', 'solarSavings', 'solarOperatingHours',
               'gridProviderBreakdown', 'unitReadings',
               'note', 'enteredBy', 'enteredByName', 'updatedAt'
             ])
@@ -573,11 +756,11 @@ service cloud.firestore {
             && (incoming().enteredBy == existing().enteredBy || incoming().enteredBy == request.auth.uid)
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'company',
-              'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost',
-              'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost',
+              'boilerCount', 'steamKg', 'boilerFuelQty', 'boilerFuelUnit', 'boilerFuelCost', 'boilerOperatingHours',
+              'generatorCount', 'generatorKwh', 'generatorFuelQty', 'generatorFuelUnit', 'generatorFuelCost', 'generatorOperatingHours',
               'dieselGeneratorCount', 'dieselGenKwh', 'dieselFuelQty', 'dieselFuelCost',
               'gasGeneratorCount', 'gasGenKwh', 'gasFuelQty', 'gasFuelCost',
-              'solarSystemCount', 'solarKwh', 'solarSavings',
+              'solarSystemCount', 'solarKwh', 'solarSavings', 'solarOperatingHours',
               'gridProviderBreakdown', 'unitReadings',
               'note', 'enteredBy', 'enteredByName', 'updatedAt'
             ])
@@ -587,6 +770,46 @@ service cloud.firestore {
       allow delete: if isVerified()
         && isValidId(genId)
         && canEnterForCompany(existing().company);
+    }
+
+    match /budgets/{budgetId} {
+      allow get: if isValidId(budgetId) && (
+        (resource == null && isApprovedUser())
+        || (resource != null && canViewCompany(existing().companyName))
+      );
+      allow list: if isApprovedUser() && (
+        isAdmin()
+        || ('viewCompanies' in userDoc() && resource.data.companyName is string && resource.data.companyName in userDoc().viewCompanies)
+      );
+
+      allow create: if isVerified()
+        && isAdmin()
+        && isValidId(budgetId)
+        && isValidFactoryBudget(incoming())
+        && incoming().updatedBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/companies/$(incoming().companyId))
+        && incoming().companyName == get(/databases/$(database)/documents/companies/$(incoming().companyId)).data.name;
+
+      allow update: if isVerified()
+        && isAdmin()
+        && isValidId(budgetId)
+        && isValidFactoryBudget(incoming())
+        && incoming().companyId == existing().companyId
+        && incoming().companyName == existing().companyName
+        && incoming().month == existing().month
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/companies/$(existing().companyId))
+        && existing().companyName == get(/databases/$(database)/documents/companies/$(existing().companyId)).data.name
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'monthlySpendLimit', 'monthlyCarbonCapKg', 'targetSolarSharePct',
+          'alertThresholdPct', 'notes', 'updatedBy', 'updatedByName', 'updatedAt'
+        ]);
+
+      allow delete: if isAdmin() && isValidId(budgetId);
     }
 
     match /integrations/{docId} {

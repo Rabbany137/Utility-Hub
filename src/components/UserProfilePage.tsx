@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   BadgeCheck,
   Briefcase,
   Building2,
+  Droplets,
   Edit3,
   Eye,
   EyeOff,
-  Flame,
+  Gauge,
   IdCard,
   KeyRound,
   Lock,
@@ -15,8 +17,6 @@ import {
   Save,
   Search,
   Shield,
-  SlidersHorizontal,
-  Sun,
   Users,
   X,
   Zap,
@@ -24,9 +24,8 @@ import {
 import { useApp } from '../context/AppContext';
 import { hasGoogleProvider, hasPasswordProvider } from '../firebase';
 import type { CompanyItem, UserDirectoryEntry, UserProfile, UserRole, UserStatus } from '../types';
-import { formatEquipmentSummary } from '../utils/equipment';
 import { formatDateTime, formatNumber } from '../utils/formatters';
-import { CompanyEquipmentEditor } from './CompanyEquipmentEditor';
+import { OrganizationEquipmentSpecsPanel } from './OrganizationEquipmentSpecsPanel';
 
 const ROLE_LABELS: Record<UserRole, string> = {
   admin: 'Admin',
@@ -34,16 +33,16 @@ const ROLE_LABELS: Record<UserRole, string> = {
   viewer: 'Viewer',
 };
 
-const ROLE_BADGE_CLASS: Record<UserRole, string> = {
-  admin: 'bg-teal-50 text-teal-800 border-teal-200',
-  entry: 'bg-sky-50 text-sky-800 border-sky-200',
-  viewer: 'bg-slate-100 text-slate-700 border-slate-200',
+const ROLE_TEXT_CLASS: Record<UserRole, string> = {
+  admin: 'text-teal-700',
+  entry: 'text-sky-700',
+  viewer: 'text-slate-600',
 };
 
-const STATUS_BADGE_CLASS: Record<UserStatus, string> = {
-  approved: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  pending: 'bg-amber-50 text-amber-800 border-amber-200',
-  rejected: 'bg-rose-50 text-rose-800 border-rose-200',
+const STATUS_META: Record<UserStatus, { textClass: string }> = {
+  approved: { textClass: 'text-emerald-700' },
+  pending: { textClass: 'text-amber-700' },
+  rejected: { textClass: 'text-rose-700' },
 };
 
 function getInitials(name: string): string {
@@ -110,11 +109,8 @@ export function UserProfilePage() {
     null
   );
 
-  // Organization Equipment Setup state
+  // Organization Equipment Specs & Infrastructure Info state
   const [openEquipCompanyId, setOpenEquipCompanyId] = useState<string | null>(null);
-  const [equipToast, setEquipToast] = useState<{ type: 'success' | 'error'; text: string } | null>(
-    null
-  );
 
   // Password Change / Link Password state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -446,20 +442,26 @@ export function UserProfilePage() {
               {getInitials(profile.name)}
             </div>
             <div className="min-w-0 space-y-1">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                 <h2 className="text-lg font-bold text-slate-900 truncate">
                   {profile.name}
                 </h2>
-                <span
-                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold rounded-md border ${ROLE_BADGE_CLASS[profile.role]}`}
-                >
-                  <Shield className="w-3 h-3" />
-                  {ROLE_LABELS[profile.role]}
+                <span className="text-slate-300" aria-hidden="true">
+                  ·
                 </span>
                 <span
-                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold rounded-md border ${STATUS_BADGE_CLASS[profile.status]}`}
+                  className={`inline-flex items-center gap-1 text-xs font-semibold ${ROLE_TEXT_CLASS[profile.role]}`}
                 >
-                  <BadgeCheck className="w-3 h-3" />
+                  <Shield className="w-3.5 h-3.5" />
+                  {ROLE_LABELS[profile.role]}
+                </span>
+                <span className="text-slate-300" aria-hidden="true">
+                  ·
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1.5 text-xs font-semibold ${STATUS_META[profile.status].textClass}`}
+                >
+                  <BadgeCheck className="w-3.5 h-3.5" />
                   {profile.status.charAt(0).toUpperCase() + profile.status.slice(1)}
                 </span>
               </div>
@@ -500,11 +502,13 @@ export function UserProfilePage() {
           </div>
         </div>
 
-        {/* Access Summary Strip */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-4 text-xs">
-          <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80 space-y-1">
-            <div className="font-semibold text-slate-700">Assigned Entry Factories</div>
-            <div className="text-slate-600">
+        {/* Flattened Access Summary Strip */}
+        <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-200 pt-4 text-xs">
+          <div className="py-2.5 md:py-0 md:pr-5 space-y-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Assigned Entry Factories
+            </div>
+            <div className="text-slate-800 font-medium">
               {profile.role === 'admin'
                 ? 'All Factories (Administrator)'
                 : profile.companies.length > 0
@@ -512,9 +516,11 @@ export function UserProfilePage() {
                 : 'Read-only / None'}
             </div>
           </div>
-          <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80 space-y-1">
-            <div className="font-semibold text-slate-700">View Factories (Dashboard)</div>
-            <div className="text-slate-600">
+          <div className="py-2.5 md:py-0 md:px-5 space-y-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              View Factories (Dashboard)
+            </div>
+            <div className="text-slate-800 font-medium">
               {profile.role === 'admin'
                 ? 'All Factories (Administrator)'
                 : profile.viewCompanies.length > 0
@@ -522,12 +528,12 @@ export function UserProfilePage() {
                 : 'None assigned yet'}
             </div>
           </div>
-          <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80 space-y-1">
-            <div className="font-semibold text-slate-700 inline-flex items-center gap-1">
+          <div className="py-2.5 md:py-0 md:pl-5 space-y-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 inline-flex items-center gap-1">
               <Zap className="w-3.5 h-3.5 text-teal-700" />
               Allowed Utilities
             </div>
-            <div className="text-slate-600">
+            <div className="text-slate-800 font-medium">
               {profile.role === 'admin'
                 ? 'All Utilities (Administrator)'
                 : formatAllowedUtilitiesText(profile.allowedUtilities)}
@@ -730,41 +736,28 @@ export function UserProfilePage() {
         </form>
       </div>
 
-      {/* Organization Equipment & Power Setup */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-200">
-          <div>
-            <div className="flex items-center gap-2">
-              <SlidersHorizontal className="w-4 h-4 text-teal-700" />
-              <h3 className="text-base font-bold text-slate-900">
-                Organization Equipment &amp; Power Setup
-              </h3>
-            </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {profile.role === 'viewer'
-                ? 'View boilers, captive generators, solar arrays, and grid electricity providers configured for your organization. Data Entry or Admin access is required to modify equipment.'
-                : 'Add or update boilers, captive generators, solar systems, and grid electricity providers for your assigned organization factories.'}
-            </p>
+      {/* Organization Equipment Specs & Water / Pump Infrastructure Info */}
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div className="p-5 sm:p-6 border-b border-slate-200">
+          <div className="flex items-center gap-2">
+            <Gauge className="w-4 h-4 text-teal-700" />
+            <h3 className="text-base font-bold text-slate-900">
+              Organization Equipment Specs &amp; Water / Pump Info
+            </h3>
           </div>
-          {equipToast && (
-            <div
-              className={`px-3 py-1.5 rounded-lg border text-xs font-medium ${
-                equipToast.type === 'success'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                  : 'bg-rose-50 border-rose-200 text-rose-800'
-              }`}
-            >
-              {equipToast.text}
-            </div>
-          )}
+          <p className="text-xs text-slate-500 mt-0.5">
+            {profile.role === 'viewer'
+              ? 'View technical specifications for generators, boilers, water supply lines, total deep pumps, and pipe diameters (ডায়া) for your organization. Data Entry or Admin access is required to edit.'
+              : 'Update technical specifications for your organization — generator & boiler specs, water supply lines, total deep pumps (মোট ডীপ পাম্প), pipe diameters (ডায়া), and plant utility infrastructure.'}
+          </p>
         </div>
 
         {organizationFactories.length === 0 ? (
-          <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg">
+          <div className="p-8 text-center text-xs text-slate-500">
             No factory is linked to your profile yet. Select your organization above or ask an Admin to assign your factories.
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="divide-y divide-slate-200">
             {organizationFactories.map((comp) => {
               const canEditComp = editableCompanyNames.has(comp.name);
               const isOpen = openEquipCompanyId === comp.id;
@@ -772,10 +765,7 @@ export function UserProfilePage() {
                 (profile.organization || '').trim().toLowerCase() === comp.name.toLowerCase();
 
               return (
-                <div
-                  key={comp.id}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-3.5"
-                >
+                <div key={comp.id} className="p-5 sm:p-6">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="min-w-0 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -783,59 +773,77 @@ export function UserProfilePage() {
                           {comp.name}
                         </span>
                         {isPrimaryOrg && (
-                          <span className="px-2 py-0.5 text-[11px] font-semibold rounded bg-teal-50 text-teal-800 border border-teal-200">
-                            Your Organization
-                          </span>
+                          <>
+                            <span className="text-slate-300" aria-hidden="true">
+                              ·
+                            </span>
+                            <span className="text-xs font-semibold text-teal-700">
+                              Primary Organization
+                            </span>
+                          </>
                         )}
                         {!canEditComp && (
-                          <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-slate-100 text-slate-600">
-                            Read-Only
-                          </span>
+                          <>
+                            <span className="text-slate-300" aria-hidden="true">
+                              ·
+                            </span>
+                            <span className="text-xs font-medium text-slate-500">
+                              Read-Only
+                            </span>
+                          </>
                         )}
                       </div>
-                      <div className="text-xs text-slate-500 flex flex-wrap items-center gap-1.5">
-                        <Flame className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                        <Zap className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-                        <Sun className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                        <span>{formatEquipmentSummary(comp)}</span>
+                      <div className="text-xs text-slate-500 flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1">
+                          <Gauge className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                          Generators &amp; Boilers Specs
+                        </span>
+                        <span className="text-slate-300">·</span>
+                        <span className="inline-flex items-center gap-1">
+                          <Droplets className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                          Water Lines, Deep Pumps &amp; Pipe Dia (ডায়া)
+                        </span>
                       </div>
                     </div>
 
                     <button
                       type="button"
-                      onClick={() => {
-                        setEquipToast(null);
+                      onClick={() =>
                         setOpenEquipCompanyId((prev) =>
                           prev === comp.id ? null : comp.id
-                        );
-                      }}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg cursor-pointer shrink-0 transition-colors ${
+                        )
+                      }
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg cursor-pointer shrink-0 whitespace-nowrap transition-colors ${
                         isOpen
                           ? 'bg-teal-700 text-white'
                           : 'bg-teal-50 text-teal-800 hover:bg-teal-100'
                       }`}
                     >
-                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      <Gauge className="w-3.5 h-3.5" />
                       {isOpen
-                        ? 'Hide Equipment'
+                        ? 'Hide Specs'
                         : canEditComp
-                        ? 'Update Equipment'
-                        : 'View Equipment'}
+                        ? 'Update Specs & Info'
+                        : 'View Specs & Info'}
                     </button>
                   </div>
 
-                  {isOpen && (
-                    <CompanyEquipmentEditor
-                      company={comp}
-                      canEdit={canEditComp}
-                      onClose={() => setOpenEquipCompanyId(null)}
-                      onSaved={(msg) => {
-                        setOpenEquipCompanyId(null);
-                        setEquipToast({ type: 'success', text: msg });
-                      }}
-                      onError={(msg) => setEquipToast({ type: 'error', text: msg })}
-                    />
-                  )}
+                  <AnimatePresence initial={false}>
+                    {isOpen && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                      >
+                        <OrganizationEquipmentSpecsPanel
+                          company={comp}
+                          canEdit={canEditComp}
+                          onClose={() => setOpenEquipCompanyId(null)}
+                        />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               );
             })}
@@ -1115,14 +1123,21 @@ export function UserProfilePage() {
                                 (You)
                               </span>
                             )}
+                            <span className="text-slate-300" aria-hidden="true">
+                              ·
+                            </span>
                             <span
-                              className={`px-2 py-0.5 text-[11px] font-semibold rounded border ${ROLE_BADGE_CLASS[entry.role]}`}
+                              className={`text-xs font-semibold ${ROLE_TEXT_CLASS[entry.role]}`}
                             >
                               {ROLE_LABELS[entry.role]}
                             </span>
+                            <span className="text-slate-300" aria-hidden="true">
+                              ·
+                            </span>
                             <span
-                              className={`px-2 py-0.5 text-[11px] font-semibold rounded border ${STATUS_BADGE_CLASS[entry.status]}`}
+                              className={`inline-flex items-center gap-1 text-xs font-semibold ${STATUS_META[entry.status].textClass}`}
                             >
+                              <BadgeCheck className="w-3.5 h-3.5" />
                               {entry.status.charAt(0).toUpperCase() + entry.status.slice(1)}
                             </span>
                           </div>
@@ -1158,30 +1173,45 @@ export function UserProfilePage() {
                             )}
                           </div>
 
-                          <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px] text-slate-600">
+                          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 pt-0.5 text-xs text-slate-600">
                             {entry.role === 'admin' ? (
-                              <span className="px-2 py-0.5 rounded bg-teal-50 text-teal-800 font-medium">
+                              <span className="text-teal-800 font-medium">
                                 Full Access (All Factories &amp; Utilities)
                               </span>
                             ) : (
                               <>
                                 {entry.role === 'entry' && (
-                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700">
-                                    Entry:{' '}
-                                    {entry.companies.length > 0
-                                      ? entry.companies.join(', ')
-                                      : 'None'}
+                                  <span>
+                                    <span className="text-slate-400">Entry:</span>{' '}
+                                    <span className="font-medium text-slate-800">
+                                      {entry.companies.length > 0
+                                        ? entry.companies.join(', ')
+                                        : 'None'}
+                                    </span>
                                   </span>
                                 )}
-                                <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 inline-flex items-center gap-1">
+                                {entry.role === 'entry' && (
+                                  <span className="text-slate-300" aria-hidden="true">
+                                    ·
+                                  </span>
+                                )}
+                                <span className="inline-flex items-center gap-1">
                                   <Eye className="w-3 h-3 text-slate-400" />
-                                  View:{' '}
-                                  {entry.viewCompanies.length > 0
-                                    ? entry.viewCompanies.join(', ')
-                                    : 'None'}
+                                  <span className="text-slate-400">View:</span>{' '}
+                                  <span className="font-medium text-slate-800">
+                                    {entry.viewCompanies.length > 0
+                                      ? entry.viewCompanies.join(', ')
+                                      : 'None'}
+                                  </span>
                                 </span>
-                                <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-900">
-                                  Utilities: {formatAllowedUtilitiesText(entry.allowedUtilities)}
+                                <span className="text-slate-300" aria-hidden="true">
+                                  ·
+                                </span>
+                                <span>
+                                  <span className="text-slate-400">Utilities:</span>{' '}
+                                  <span className="font-medium text-emerald-800">
+                                    {formatAllowedUtilitiesText(entry.allowedUtilities)}
+                                  </span>
                                 </span>
                               </>
                             )}

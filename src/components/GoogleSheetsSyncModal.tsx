@@ -58,13 +58,13 @@ export function GoogleSheetsSyncModal({
             <span className="font-semibold text-slate-900 tabular-nums">
               {formatNumber(recordCount, 0)}
             </span>{' '}
-            utility entry rows into{' '}
-            <span className="font-semibold text-slate-900">&quot;{spreadsheetTitle}&quot;</span>, organizing the main{' '}
-            <span className="font-mono-num text-slate-900">Master_Backup</span> tab,{' '}
-            <span className="font-mono-num text-slate-900">Monthly_Summary</span> tab, and separate monthly tabs per factory (e.g., <span className="font-mono-num text-slate-800">Factory - Nov 2026</span>).
+            utility &amp; generation records into{' '}
+            <span className="font-semibold text-slate-900">&quot;{spreadsheetTitle}&quot;</span>, building the{' '}
+            <span className="font-mono-num text-slate-900">Executive_Summary</span> tab, annual formatted factory report tabs (e.g., <span className="font-mono-num text-slate-800">Factory - 2026</span> with one row per day ordered chronologically), and{' '}
+            <span className="font-mono-num text-slate-900">Master_Backup</span>.
           </p>
           <p className="text-xs text-slate-500">
-            New monthly tabs are created automatically whenever a new factory, month, or year is logged. Each tab includes Unit Cost (BDT/Unit) and Monthly Totals.
+            Each factory-year report includes live spreadsheet formulas (<span className="font-mono-num">SUM</span>, <span className="font-mono-num">IFERROR</span>, <span className="font-mono-num">Unit/Hr</span>), operating hours completeness, conditional <span className="font-mono-num">Audit Flags</span>, monthly subtotals, and annual totals.
           </p>
         </div>
 

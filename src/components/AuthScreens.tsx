@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { motion } from 'motion/react';
 import {
   Building2,
   CheckCircle2,
@@ -123,16 +124,26 @@ export function AuthLoginScreen() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-10 px-4 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md mb-6 text-center">
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        className="sm:mx-auto sm:w-full sm:max-w-md mb-6 text-center"
+      >
         <h1 className="text-3xl font-bold tracking-tight text-slate-900">
           {APP_NAME}
         </h1>
         <p className="mt-2 text-sm text-slate-600">
           Daily utility consumption and cost management portal
         </p>
-      </div>
+      </motion.div>
 
-      <div className="sm:mx-auto sm:w-full sm:max-w-md bg-white border border-slate-200 rounded-xl p-6 sm:p-8">
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.22, delay: 0.04, ease: [0.16, 1, 0.3, 1] }}
+        className="sm:mx-auto sm:w-full sm:max-w-md bg-white border border-slate-200 rounded-xl p-6 sm:p-8 shadow-sm"
+      >
         {mode !== 'reset' && (
           <div className="mb-5">
             <GoogleSignInButton
@@ -152,36 +163,39 @@ export function AuthLoginScreen() {
 
         {mode !== 'reset' ? (
           <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg mb-5">
-            <button
-              type="button"
-              onClick={() => {
-                setMode('login');
-                setError('');
-                setInfo('');
-              }}
-              className={`py-2 px-3 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                mode === 'login'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode('signup');
-                setError('');
-                setInfo('');
-              }}
-              className={`py-2 px-3 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                mode === 'signup'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Create Account
-            </button>
+            {(
+              [
+                { id: 'login', label: 'Sign In' },
+                { id: 'signup', label: 'Create Account' },
+              ] as const
+            ).map((item) => {
+              const isActive = mode === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setMode(item.id);
+                    setError('');
+                    setInfo('');
+                  }}
+                  className={`relative py-2 px-3 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                    isActive
+                      ? 'text-slate-900'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {isActive && (
+                    <motion.span
+                      layoutId="authModePill"
+                      transition={{ type: 'spring', stiffness: 450, damping: 34 }}
+                      className="absolute inset-0 bg-white rounded-md shadow-sm"
+                    />
+                  )}
+                  <span className="relative z-10">{item.label}</span>
+                </button>
+              );
+            })}
           </div>
         ) : (
           <div className="mb-6 pb-4 border-b border-slate-200 flex items-center justify-between">
@@ -355,17 +369,23 @@ export function AuthLoginScreen() {
               : 'Send Reset Link'}
           </button>
         </form>
-      </div>
+      </motion.div>
     </div>
   );
 }
 
 export function VerifyEmailScreen() {
-  const { user, checkEmailVerified, resendVerification, logout } = useApp();
+  const { user, checkEmailVerified, verifyWithGoogle, resendVerification, logout } = useApp();
   const [checking, setChecking] = useState(false);
+  const [googleVerifying, setGoogleVerifying] = useState(false);
   const [resending, setResending] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+
+  const hasGoogleLinked = Boolean(
+    user?.providerData?.some((p) => p.providerId === 'google.com')
+  );
+  const isGmail = Boolean(user?.email?.toLowerCase().endsWith('@gmail.com'));
 
   const handleCheck = async () => {
     setChecking(true);
@@ -382,6 +402,24 @@ export function VerifyEmailScreen() {
       setError(mapAuthError(err));
     } finally {
       setChecking(false);
+    }
+  };
+
+  const handleGoogleVerify = async () => {
+    setGoogleVerifying(true);
+    setMessage('');
+    setError('');
+    try {
+      const verified = await verifyWithGoogle();
+      if (!verified) {
+        setError(
+          'Google sign-in completed, but email verification is still pending. Please try the email verification link.'
+        );
+      }
+    } catch (err) {
+      setError(mapAuthError(err));
+    } finally {
+      setGoogleVerifying(false);
     }
   };
 
@@ -411,9 +449,12 @@ export function VerifyEmailScreen() {
             Verify Your Email
           </h1>
           <p className="text-sm text-slate-600 leading-relaxed">
-            A verification link has been sent to{' '}
-            <span className="font-semibold text-slate-900">{user?.email}</span>.
-            Click the link in your email to verify your address, then select the button below.
+            Your email{' '}
+            <span className="font-semibold text-slate-900">{user?.email}</span>{' '}
+            must be verified before accessing the workspace.
+            {hasGoogleLinked || isGmail
+              ? ' You can verify instantly with Google below, or click the verification link sent to your inbox.'
+              : ' Click the link in your email to verify your address, then select the button below.'}
           </p>
         </div>
 
@@ -429,11 +470,19 @@ export function VerifyEmailScreen() {
           </div>
         )}
 
+        {(hasGoogleLinked || isGmail) && (
+          <GoogleSignInButton
+            onClick={() => void handleGoogleVerify()}
+            disabled={googleVerifying || checking || resending}
+            label={googleVerifying ? 'Verifying with Google...' : 'Verify Instantly with Google'}
+          />
+        )}
+
         <div className="flex flex-col sm:flex-row gap-3 pt-1">
           <button
             type="button"
             onClick={handleCheck}
-            disabled={checking}
+            disabled={checking || googleVerifying}
             className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-teal-700 text-white text-sm font-semibold rounded-lg hover:bg-teal-800 disabled:opacity-60 transition-colors whitespace-nowrap cursor-pointer"
           >
             <CheckCircle2 className="w-4 h-4" />
@@ -443,7 +492,7 @@ export function VerifyEmailScreen() {
           <button
             type="button"
             onClick={handleResend}
-            disabled={resending}
+            disabled={resending || googleVerifying}
             className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 disabled:opacity-60 transition-colors whitespace-nowrap cursor-pointer"
           >
             <RefreshCw className="w-4 h-4" />

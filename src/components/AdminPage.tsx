@@ -1,15 +1,25 @@
 import React, { useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
+  AlertCircle,
+  ArrowLeftRight,
   Building2,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Clock,
   Copy,
   Download,
   Edit3,
   ExternalLink,
   FileSpreadsheet,
+  FileText,
   Flame,
+  Gauge,
+  Mail,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -37,6 +47,10 @@ import {
 import { useApp } from '../context/AppContext';
 import { OperationType, db, handleFirestoreError } from '../firebase';
 import {
+  isValidEmailAddress,
+  syncMailSchedulesViaAppsScript,
+} from '../services/dailyMail';
+import {
   APPS_SCRIPT_TEMPLATE,
   SheetsAuthError,
   createUtilitySpreadsheet,
@@ -47,16 +61,23 @@ import {
   syncViaAppsScriptWebhook,
 } from '../services/googleSheets';
 import {
+  type ActivePage,
   type CompanyItem,
   type UserProfile,
   type UserRole,
   type UserStatus,
 } from '../types';
 import { formatEquipmentSummary } from '../utils/equipment';
-import { formatDateTime, formatNumber, toSafeFirestoreId } from '../utils/formatters';
+import {
+  formatDateTime,
+  formatNumber,
+  getTodayISO,
+  toSafeFirestoreId,
+} from '../utils/formatters';
 import { CompanyEquipmentEditor } from './CompanyEquipmentEditor';
 import { GoogleSignInButton } from './GoogleSignInButton';
 import { GoogleSheetsSyncModal } from './GoogleSheetsSyncModal';
+import { OrganizationEquipmentSpecsPanel } from './OrganizationEquipmentSpecsPanel';
 
 type AdminTab = 'users' | 'companies' | 'utilities' | 'sheets';
 
@@ -72,29 +93,42 @@ const ROLE_LABELS: Record<UserRole, string> = {
   viewer: 'Viewer',
 };
 
-export function AdminPage() {
+export function AdminPage({
+  onNavigate,
+}: {
+  onNavigate?: (page: ActivePage) => void;
+}) {
   const {
     user,
     allUsers,
     companies,
     utilities,
     entries,
+    generationEntries,
     sheetsConfig,
     googleAccessToken,
+    autoSyncState,
     adminUpdateUser,
     syncPublicCompanies,
     connectGoogleSheets,
     clearGoogleToken,
     saveSheetsConfig,
+    toggleAutoSync,
     removeSheetsConfig,
     syncEntriesToConnectedSheet,
     importEntriesFromConnectedSheet,
+    runTwoWaySyncNow,
     seedDefaultsIfNeeded,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<AdminTab>('users');
   const [busyUid, setBusyUid] = useState<string | null>(null);
   const [expandedUserUids, setExpandedUserUids] = useState<Record<string, boolean>>({});
+  const [expandedMailUids, setExpandedMailUids] = useState<Record<string, boolean>>({});
+  const [mailDrafts, setMailDrafts] = useState<
+    Record<string, { enabled: boolean; email: string; time: string }>
+  >({});
+  const [syncingMailSchedules, setSyncingMailSchedules] = useState(false);
   const [editingProfileUid, setEditingProfileUid] = useState<string | null>(null);
   const [userProfileDraft, setUserProfileDraft] = useState<{
     name: string;
@@ -126,6 +160,7 @@ export function AdminPage() {
 
   // Plant equipment & grid power editor state (keyed by `${scopeKey}::${companyId}`)
   const [openEquipKey, setOpenEquipKey] = useState<string | null>(null);
+  const [openSpecsCompanyId, setOpenSpecsCompanyId] = useState<string | null>(null);
 
   // Utility management state
   const [newUtilName, setNewUtilName] = useState('');
@@ -160,6 +195,10 @@ export function AdminPage() {
   const [appsScriptTab, setAppsScriptTab] = useState('Master_Backup');
   const [copiedScript, setCopiedScript] = useState(false);
   const [showAppsScriptUpgrade, setShowAppsScriptUpgrade] = useState(false);
+  const [twoWayBusy, setTwoWayBusy] = useState(false);
+  const [togglingAutoSync, setTogglingAutoSync] = useState(false);
+  const [confirmAutoSyncModalOpen, setConfirmAutoSyncModalOpen] = useState(false);
+  const [pendingAutoInterval, setPendingAutoInterval] = useState<number>(30);
 
   const sortedUsers = useMemo(() => {
     const rank: Record<UserStatus, number> = {
@@ -179,6 +218,31 @@ export function AdminPage() {
   const pendingCount = useMemo(
     () => allUsers.filter((u) => u.status === 'pending').length,
     [allUsers]
+  );
+
+  const todayISO = getTodayISO();
+
+  const hasAppsScriptWebhook = Boolean(
+    sheetsConfig?.syncMode === 'appsScript' &&
+      sheetsConfig?.webhookUrl &&
+      isValidAppsScriptUrl(sheetsConfig.webhookUrl)
+  );
+
+  const enabledDailyMailUsers = useMemo(
+    () =>
+      allUsers.filter(
+        (u) =>
+          u.status === 'approved' &&
+          u.dailyMailEnabled &&
+          isValidEmailAddress(u.dailyMailEmail || u.email)
+      ),
+    [allUsers]
+  );
+
+  const sentTodayMailCount = useMemo(
+    () =>
+      enabledDailyMailUsers.filter((u) => u.lastDailyMailSentDate === todayISO).length,
+    [enabledDailyMailUsers, todayISO]
   );
 
   const utilityEntryCountMap = useMemo(() => {
@@ -227,6 +291,10 @@ export function AdminPage() {
         | 'designation'
         | 'phone'
         | 'employeeId'
+        | 'dailyMailEnabled'
+        | 'dailyMailEmail'
+        | 'dailyMailTime'
+        | 'lastDailyMailSentDate'
       >
     >,
     successText: string
@@ -302,6 +370,144 @@ export function AdminPage() {
       `Updated profile information for ${cleanName}.`
     );
     setEditingProfileUid(null);
+  };
+
+  const buildMailScheduleList = (overrideUser?: UserProfile) => {
+    const companyNames = companies.map((c) => c.name);
+    const list = allUsers.map((item) =>
+      overrideUser && item.uid === overrideUser.uid ? overrideUser : item
+    );
+    return list
+      .filter(
+        (item) =>
+          item.status === 'approved' &&
+          item.dailyMailEnabled &&
+          isValidEmailAddress(item.dailyMailEmail || item.email)
+      )
+      .map((item) => ({
+        uid: item.uid,
+        name: item.name,
+        email: (item.dailyMailEmail || item.email).trim(),
+        time: item.dailyMailTime || '08:30',
+        enabled: true,
+        companies:
+          item.role === 'admin' ? companyNames : item.viewCompanies || [],
+        allowedUtilities:
+          item.role === 'admin' ? [] : item.allowedUtilities || [],
+      }));
+  };
+
+  const handleToggleMailPanel = (target: UserProfile) => {
+    const isCurrentlyOpen = Boolean(expandedMailUids[target.uid]);
+    setExpandedMailUids((prev) => ({
+      ...prev,
+      [target.uid]: !isCurrentlyOpen,
+    }));
+    if (!isCurrentlyOpen) {
+      setMailDrafts((prev) => ({
+        ...prev,
+        [target.uid]: {
+          enabled: Boolean(target.dailyMailEnabled),
+          email: (target.dailyMailEmail || target.email || '').trim(),
+          time: target.dailyMailTime || '08:30',
+        },
+      }));
+    }
+  };
+
+  const handleSaveUserDailyMail = async (target: UserProfile) => {
+    const draft = mailDrafts[target.uid] || {
+      enabled: Boolean(target.dailyMailEnabled),
+      email: (target.dailyMailEmail || target.email || '').trim(),
+      time: target.dailyMailTime || '08:30',
+    };
+
+    const cleanEmail = draft.email.trim();
+    const cleanTime = /^\d{2}:\d{2}$/.test(draft.time) ? draft.time : '08:30';
+
+    if (draft.enabled && !isValidEmailAddress(cleanEmail)) {
+      setToast({
+        type: 'error',
+        text: `Please enter a valid destination email address for ${target.name}.`,
+      });
+      return;
+    }
+
+    setBusyUid(target.uid);
+    setToast(null);
+    try {
+      const updates: Partial<UserProfile> = {
+        dailyMailEnabled: draft.enabled,
+        dailyMailEmail: cleanEmail || target.email,
+        dailyMailTime: cleanTime,
+      };
+      await adminUpdateUser(target, updates);
+
+      let syncNote = '';
+      if (hasAppsScriptWebhook && sheetsConfig?.webhookUrl) {
+        try {
+          const updatedTarget: UserProfile = {
+            ...target,
+            dailyMailEnabled: draft.enabled,
+            dailyMailEmail: cleanEmail || target.email,
+            dailyMailTime: cleanTime,
+          };
+          const schedules = buildMailScheduleList(updatedTarget);
+          await syncMailSchedulesViaAppsScript({
+            webhookUrl: sheetsConfig.webhookUrl,
+            schedules,
+          });
+          syncNote = ' & synced to Apps Script.';
+        } catch (syncErr) {
+          syncNote =
+            syncErr instanceof Error
+              ? ` (Saved to profile; Apps Script schedule sync warning: ${syncErr.message})`
+              : ' (Saved to profile; Apps Script schedule sync failed.)';
+        }
+      }
+
+      setToast({
+        type: 'success',
+        text: draft.enabled
+          ? `Scheduled daily push mail for ${target.name} at ${cleanTime} → ${cleanEmail}${syncNote}`
+          : `Disabled daily push mail for ${target.name}${syncNote}`,
+      });
+      setExpandedMailUids((prev) => ({ ...prev, [target.uid]: false }));
+    } catch (err) {
+      setToast({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to save daily mail schedule.',
+      });
+    } finally {
+      setBusyUid(null);
+    }
+  };
+
+  const handleSyncAllMailSchedules = async () => {
+    if (!hasAppsScriptWebhook || !sheetsConfig?.webhookUrl) return;
+    setSyncingMailSchedules(true);
+    setToast(null);
+    try {
+      const schedules = buildMailScheduleList();
+      await syncMailSchedulesViaAppsScript({
+        webhookUrl: sheetsConfig.webhookUrl,
+        schedules,
+      });
+      setToast({
+        type: 'success',
+        text: `Synced ${formatNumber(schedules.length, 0)} active daily mail schedule(s) to Google Apps Script.`,
+      });
+    } catch (err) {
+      setToast({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Failed to sync daily mail schedules to Apps Script.',
+      });
+    } finally {
+      setSyncingMailSchedules(false);
+    }
   };
 
   const handleToggleAllowedUtility = async (
@@ -684,6 +890,22 @@ export function AdminPage() {
       await updateDoc(doc(db, 'companies', companyId), {
         name: newName,
       });
+      const [infraSnap, specsSnap] = await Promise.all([
+        getDocs(collection(db, 'companies', companyId, 'infrastructure')),
+        getDocs(collection(db, 'companies', companyId, 'equipmentSpecs')),
+      ]);
+      const subDocs = [...infraSnap.docs, ...specsSnap.docs];
+      for (let i = 0; i < subDocs.length; i += 400) {
+        const chunk = subDocs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        for (const subDoc of chunk) {
+          batch.update(subDoc.ref, {
+            companyName: newName,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      }
       await syncPublicCompanies(
         companies.map((c) => (c.id === companyId ? newName : c.name))
       );
@@ -761,6 +983,19 @@ export function AdminPage() {
     setCompanyBusy(true);
     setToast(null);
     try {
+      const [infraSnap, specsSnap] = await Promise.all([
+        getDocs(collection(db, 'companies', companyId, 'infrastructure')),
+        getDocs(collection(db, 'companies', companyId, 'equipmentSpecs')),
+      ]);
+      const subDocs = [...infraSnap.docs, ...specsSnap.docs];
+      for (let i = 0; i < subDocs.length; i += 400) {
+        const chunk = subDocs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        for (const subDoc of chunk) {
+          batch.delete(subDoc.ref);
+        }
+        await batch.commit();
+      }
       await deleteDoc(doc(db, 'companies', companyId));
       await syncPublicCompanies(
         companies.filter((c) => c.id !== companyId).map((c) => c.name)
@@ -1266,7 +1501,12 @@ export function AdminPage() {
         trimmedWebhook,
         tabName,
         entries,
-        utilities
+        utilities,
+        {
+          generationEntries,
+          companies,
+          pruneStaleTabs: true,
+        }
       );
 
       await saveSheetsConfig({
@@ -1317,6 +1557,107 @@ export function AdminPage() {
     }
   };
 
+  const handleTwoWaySyncNow = async () => {
+    if (!sheetsConfig) return;
+    setTwoWayBusy(true);
+    setToast(null);
+    try {
+      if (sheetsConfig.syncMode !== 'appsScript' && !googleAccessToken) {
+        await ensureToken();
+      }
+      const res = await runTwoWaySyncNow({
+        forceDirection: 'bidirectional',
+        pruneStaleTabs: true,
+      });
+      setPreviewRows(null);
+      setToast({
+        type: 'success',
+        text: `Two-way sync complete: ${res.summary}.`,
+      });
+    } catch (err) {
+      if (err instanceof SheetsAuthError) clearGoogleToken();
+      setToast({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Two-way Google Sheets sync failed.',
+      });
+    } finally {
+      setTwoWayBusy(false);
+    }
+  };
+
+  const handleToggleAutoSyncClick = async (nextEnabled: boolean, nextInterval?: number) => {
+    if (!sheetsConfig) return;
+    const interval = nextInterval ?? sheetsConfig.autoSyncIntervalSec ?? 30;
+    if (nextEnabled && sheetsConfig.syncMode !== 'appsScript') {
+      setPendingAutoInterval(interval);
+      setConfirmAutoSyncModalOpen(true);
+      return;
+    }
+    setTogglingAutoSync(true);
+    setToast(null);
+    try {
+      await toggleAutoSync(nextEnabled, interval);
+      setToast({
+        type: 'success',
+        text: nextEnabled
+          ? `Automatic two-way sync enabled (every ${interval}s).`
+          : 'Automatic Google Sheets sync paused.',
+      });
+    } catch (err) {
+      setToast({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to update auto-sync settings.',
+      });
+    } finally {
+      setTogglingAutoSync(false);
+    }
+  };
+
+  const handleConfirmEnableOAuthAutoSync = async () => {
+    setTogglingAutoSync(true);
+    setToast(null);
+    try {
+      if (!googleAccessToken) {
+        await ensureToken();
+      }
+      await toggleAutoSync(true, pendingAutoInterval);
+      setConfirmAutoSyncModalOpen(false);
+      setToast({
+        type: 'success',
+        text: `Automatic two-way sync enabled (every ${pendingAutoInterval}s).`,
+      });
+    } catch (err) {
+      if (err instanceof SheetsAuthError) clearGoogleToken();
+      setConfirmAutoSyncModalOpen(false);
+      setToast({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to enable OAuth auto-sync.',
+      });
+    } finally {
+      setTogglingAutoSync(false);
+    }
+  };
+
+  const handleChangeAutoSyncInterval = async (intervalSec: number) => {
+    if (!sheetsConfig) return;
+    setTogglingAutoSync(true);
+    setToast(null);
+    try {
+      await toggleAutoSync(sheetsConfig.autoSyncEnabled !== false, intervalSec);
+      setToast({
+        type: 'success',
+        text: `Auto-sync polling interval set to ${intervalSec}s.`,
+      });
+    } catch (err) {
+      setToast({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to update polling interval.',
+      });
+    } finally {
+      setTogglingAutoSync(false);
+    }
+  };
+
   const handleImportFromSheet = async () => {
     if (!sheetsConfig) return;
     setImportingSheets(true);
@@ -1326,19 +1667,26 @@ export function AdminPage() {
         await ensureToken();
       }
       const res = await importEntriesFromConnectedSheet();
-      if (res.created === 0 && res.updated === 0) {
+      if (
+        res.created === 0 &&
+        res.updated === 0 &&
+        res.generationUpdated === 0 &&
+        res.createdCompanies === 0
+      ) {
         setToast({
           type: res.skipped > 0 ? 'error' : 'success',
           text:
             res.skipped > 0
-              ? `No entries imported (${formatNumber(res.skipped, 0)} rows skipped due to unknown utility or invalid date).`
-              : 'No entry rows found in the connected Google Sheet.',
+              ? `No new Sheet edits found (${formatNumber(res.skipped, 0)} rows skipped due to unknown utility or invalid date).`
+              : 'All Google Sheet rows already match the app database.',
         });
       } else {
-        const parts: string[] = [
-          `${formatNumber(res.created, 0)} added`,
-          `${formatNumber(res.updated, 0)} updated`,
-        ];
+        const parts: string[] = [];
+        if (res.created > 0) parts.push(`${formatNumber(res.created, 0)} entries added`);
+        if (res.updated > 0) parts.push(`${formatNumber(res.updated, 0)} entries updated`);
+        if (res.generationUpdated > 0) {
+          parts.push(`${formatNumber(res.generationUpdated, 0)} plant logs updated`);
+        }
         if (res.createdCompanies > 0) {
           parts.push(`${formatNumber(res.createdCompanies, 0)} new factories added`);
         }
@@ -1347,7 +1695,7 @@ export function AdminPage() {
         }
         setToast({
           type: 'success',
-          text: `Imported from Google Sheets: ${parts.join(', ')}.`,
+          text: `Pulled from Google Sheets: ${parts.join(', ')}.`,
         });
       }
     } catch (err) {
@@ -1382,62 +1730,62 @@ export function AdminPage() {
       {/* Sub-navigation Tabs + Toast */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-200/70 rounded-lg self-start">
-          <button
-            type="button"
-            onClick={() => setActiveTab('users')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === 'users'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            Users ({formatNumber(allUsers.length, 0)})
-            {pendingCount > 0 && (
-              <span className="text-amber-700 font-bold">
-                · {formatNumber(pendingCount, 0)} Pending
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('companies')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === 'companies'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Building2 className="w-4 h-4" />
-            Companies ({formatNumber(companies.length, 0)})
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('utilities')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === 'utilities'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Zap className="w-4 h-4" />
-            Utilities ({formatNumber(utilities.length, 0)})
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('sheets')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-              activeTab === 'sheets'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            Google Sheets
-          </button>
+          {(
+            [
+              {
+                id: 'users' as AdminTab,
+                icon: Users,
+                label: `Users (${formatNumber(allUsers.length, 0)})`,
+              },
+              {
+                id: 'companies' as AdminTab,
+                icon: Building2,
+                label: `Companies (${formatNumber(companies.length, 0)})`,
+              },
+              {
+                id: 'utilities' as AdminTab,
+                icon: Zap,
+                label: `Utilities (${formatNumber(utilities.length, 0)})`,
+              },
+              {
+                id: 'sheets' as AdminTab,
+                icon: FileSpreadsheet,
+                label: 'Google Sheets',
+              },
+            ] as const
+          ).map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  isActive
+                    ? 'text-slate-900'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {isActive && (
+                  <motion.span
+                    layoutId="adminActiveTab"
+                    transition={{ type: 'spring', stiffness: 450, damping: 34 }}
+                    className="absolute inset-0 bg-white rounded-md shadow-sm"
+                  />
+                )}
+                <span className="relative z-10 inline-flex items-center gap-2 tabular-nums">
+                  <Icon className="w-4 h-4" />
+                  {tab.label}
+                  {tab.id === 'users' && pendingCount > 0 && (
+                    <span className="text-amber-700 font-bold">
+                      · {formatNumber(pendingCount, 0)} Pending
+                    </span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         {toast && (
@@ -1455,14 +1803,70 @@ export function AdminPage() {
 
       {/* TAB 1: USERS */}
       {activeTab === 'users' && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <div className="p-5 sm:p-6 border-b border-slate-200">
-            <h2 className="text-base font-bold text-slate-900">
-              User Approval & Role Management
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Pending users appear first. Only approved users can access dashboards or log data.
-            </p>
+        <motion.div
+          key="admin-users-tab"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          className="bg-white border border-slate-200 rounded-xl overflow-hidden"
+        >
+          <div className="p-5 sm:p-6 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">
+                User Approval, Access &amp; Daily Push Mail
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Pending users appear first. Configure factory/utility access and scheduled daily executive report emails per user.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 tabular-nums">
+                <Mail className="w-3.5 h-3.5 text-teal-700" />
+                <span>
+                  <strong className="text-slate-900">
+                    {formatNumber(enabledDailyMailUsers.length, 0)}
+                  </strong>{' '}
+                  scheduled
+                </span>
+                <span className="text-slate-300" aria-hidden="true">
+                  ·
+                </span>
+                <span>
+                  <strong className="text-emerald-700">
+                    {formatNumber(sentTodayMailCount, 0)}
+                  </strong>{' '}
+                  sent today
+                </span>
+              </div>
+
+              {hasAppsScriptWebhook && (
+                <button
+                  type="button"
+                  disabled={syncingMailSchedules}
+                  onClick={() => void handleSyncAllMailSchedules()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 disabled:opacity-60 whitespace-nowrap cursor-pointer"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 text-teal-700 ${
+                      syncingMailSchedules ? 'animate-spin' : ''
+                    }`}
+                  />
+                  {syncingMailSchedules ? 'Syncing...' : 'Sync Schedules to Script'}
+                </button>
+              )}
+
+              {onNavigate && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('reports')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-teal-700 text-white rounded-lg hover:bg-teal-800 whitespace-nowrap cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Report &amp; Mail Preview
+                </button>
+              )}
+            </div>
           </div>
 
           {sortedUsers.length === 0 ? (
@@ -1539,6 +1943,26 @@ export function AdminPage() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2.5">
+                        {u.status === 'approved' && (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => handleToggleMailPanel(u)}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap cursor-pointer ${
+                              expandedMailUids[u.uid]
+                                ? 'bg-teal-800 border-teal-800 text-white'
+                                : u.dailyMailEnabled
+                                ? 'bg-teal-50 border-teal-300 text-teal-900 hover:bg-teal-100'
+                                : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            <Mail className="w-3.5 h-3.5" />
+                            {u.dailyMailEnabled
+                              ? `Mail: ${u.dailyMailTime || '08:30'}`
+                              : 'Daily Mail'}
+                          </button>
+                        )}
+
                         <button
                           type="button"
                           disabled={isBusy}
@@ -1802,6 +2226,206 @@ export function AdminPage() {
                       </p>
                     )}
 
+                    {u.status === 'approved' && (() => {
+                      const mailOpen = Boolean(expandedMailUids[u.uid]);
+                      const mailDraft = mailDrafts[u.uid] || {
+                        enabled: Boolean(u.dailyMailEnabled),
+                        email: (u.dailyMailEmail || u.email || '').trim(),
+                        time: u.dailyMailTime || '08:30',
+                      };
+                      const sentToday = u.lastDailyMailSentDate === todayISO;
+
+                      return (
+                        <div className="mt-3 pt-3 border-t border-slate-100">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <div className="flex flex-wrap items-center gap-2 text-slate-600">
+                              <Mail
+                                className={`w-3.5 h-3.5 ${
+                                  u.dailyMailEnabled ? 'text-teal-700' : 'text-slate-400'
+                                }`}
+                              />
+                              {u.dailyMailEnabled ? (
+                                <>
+                                  <span className="font-semibold text-teal-800 tabular-nums">
+                                    Daily Push: {u.dailyMailTime || '08:30'}
+                                  </span>
+                                  <span className="text-slate-300" aria-hidden="true">
+                                    →
+                                  </span>
+                                  <span className="font-medium text-slate-800">
+                                    {u.dailyMailEmail || u.email}
+                                  </span>
+                                  {sentToday && (
+                                    <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
+                                      <CheckCircle2 className="w-3.5 h-3.5" />
+                                      Sent today
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-slate-500">
+                                  Daily push email: <strong className="font-medium text-slate-700">Off</strong>
+                                </span>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggleMailPanel(u)}
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-teal-700 hover:text-teal-900 cursor-pointer"
+                            >
+                              <Clock className="w-3.5 h-3.5" />
+                              {mailOpen ? 'Hide Mail Schedule' : 'Configure Daily Mail'}
+                              {mailOpen ? (
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              ) : (
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+
+                          <AnimatePresence initial={false}>
+                            {mailOpen && (
+                              <motion.div
+                                initial={{ opacity: 0, y: -4 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -4 }}
+                                transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                                className="mt-3 p-4 rounded-xl bg-teal-50/40 border border-teal-200/80 space-y-3"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={mailDraft.enabled}
+                                      disabled={isBusy}
+                                      onChange={(e) =>
+                                        setMailDrafts((prev) => ({
+                                          ...prev,
+                                          [u.uid]: {
+                                            ...mailDraft,
+                                            enabled: e.target.checked,
+                                          },
+                                        }))
+                                      }
+                                      className="rounded border-slate-300 text-teal-700 focus:ring-teal-600"
+                                    />
+                                    <span>Enable Daily Push Executive Brief</span>
+                                  </label>
+
+                                  {u.lastDailyMailSentDate && (
+                                    <span className="text-[11px] text-slate-500 tabular-nums">
+                                      Last sent: {u.lastDailyMailSentDate}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                                  <div className="sm:col-span-6">
+                                    <div className="flex items-center justify-between mb-1">
+                                      <label
+                                        htmlFor={`mail-email-${u.uid}`}
+                                        className="block text-[11px] font-medium text-slate-700"
+                                      >
+                                        Designated Email Address
+                                      </label>
+                                      {mailDraft.email !== u.email && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setMailDrafts((prev) => ({
+                                              ...prev,
+                                              [u.uid]: {
+                                                ...mailDraft,
+                                                email: u.email,
+                                              },
+                                            }))
+                                          }
+                                          className="text-[11px] font-medium text-teal-700 hover:underline cursor-pointer"
+                                        >
+                                          Use login email
+                                        </button>
+                                      )}
+                                    </div>
+                                    <input
+                                      id={`mail-email-${u.uid}`}
+                                      type="email"
+                                      value={mailDraft.email}
+                                      disabled={isBusy}
+                                      onChange={(e) =>
+                                        setMailDrafts((prev) => ({
+                                          ...prev,
+                                          [u.uid]: {
+                                            ...mailDraft,
+                                            email: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                      placeholder={u.email}
+                                      className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-600"
+                                    />
+                                  </div>
+
+                                  <div className="sm:col-span-3">
+                                    <label
+                                      htmlFor={`mail-time-${u.uid}`}
+                                      className="block text-[11px] font-medium text-slate-700 mb-1"
+                                    >
+                                      Daily Delivery Time
+                                    </label>
+                                    <input
+                                      id={`mail-time-${u.uid}`}
+                                      type="time"
+                                      value={mailDraft.time}
+                                      disabled={isBusy}
+                                      onChange={(e) =>
+                                        setMailDrafts((prev) => ({
+                                          ...prev,
+                                          [u.uid]: {
+                                            ...mailDraft,
+                                            time: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                      className="w-full px-3 py-1.5 text-xs font-mono-num bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-600"
+                                    />
+                                  </div>
+
+                                  <div className="sm:col-span-3 flex items-center justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setExpandedMailUids((prev) => ({
+                                          ...prev,
+                                          [u.uid]: false,
+                                        }))
+                                      }
+                                      className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() => void handleSaveUserDailyMail(u)}
+                                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-teal-700 text-white text-xs font-semibold rounded-lg hover:bg-teal-800 disabled:opacity-60 whitespace-nowrap cursor-pointer"
+                                    >
+                                      <Save className="w-3.5 h-3.5" />
+                                      {isBusy ? 'Saving...' : 'Save Schedule'}
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <p className="text-[11px] text-slate-600">
+                                  Each daily brief is automatically scoped to {u.name}&apos;s assigned factories ({u.role === 'admin' ? 'All Factories' : u.viewCompanies.length > 0 ? u.viewCompanies.join(', ') : 'None assigned'}) and includes yesterday&apos;s spend, operating hours, burn rate, and data validation alerts.
+                                </p>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      );
+                    })()}
+
                     {(u.role === 'entry' || u.role === 'viewer') && (() => {
                       const isExpanded =
                         expandedUserUids[u.uid] ?? u.status === 'pending';
@@ -1816,41 +2440,55 @@ export function AdminPage() {
                       return (
                         <div className="mt-3 pt-3 border-t border-slate-200/80">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-600">
                               {u.role === 'entry' && (
-                                <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
-                                  Entry:{' '}
-                                  {u.companies.length > 0
-                                    ? u.companies.join(', ')
-                                    : 'None'}
-                                </span>
+                                <>
+                                  <span>
+                                    <span className="text-slate-400">Entry:</span>{' '}
+                                    <span className="font-medium text-slate-800">
+                                      {u.companies.length > 0
+                                        ? u.companies.join(', ')
+                                        : 'None'}
+                                    </span>
+                                  </span>
+                                  <span className="text-slate-300" aria-hidden="true">
+                                    ·
+                                  </span>
+                                </>
                               )}
                               <span
-                                className={`px-2 py-0.5 rounded ${
+                                className={
                                   isNoneSelected
-                                    ? 'bg-amber-100 text-amber-800 font-medium'
-                                    : 'bg-slate-100 text-slate-700'
-                                }`}
+                                    ? 'text-amber-800 font-semibold'
+                                    : 'text-slate-600'
+                                }
                               >
-                                Utilities:{' '}
-                                {allowedUtilCount === null
-                                  ? 'All'
-                                  : isNoneSelected || allowedUtilCount === 0
-                                  ? 'None'
-                                  : `${formatNumber(allowedUtilCount, 0)} selected`}
+                                <span className="text-slate-400 font-normal">Utilities:</span>{' '}
+                                <span className="font-medium">
+                                  {allowedUtilCount === null
+                                    ? 'All'
+                                    : isNoneSelected || allowedUtilCount === 0
+                                    ? 'None'
+                                    : `${formatNumber(allowedUtilCount, 0)} selected`}
+                                </span>
+                              </span>
+                              <span className="text-slate-300" aria-hidden="true">
+                                ·
                               </span>
                               <span
-                                className={`px-2 py-0.5 rounded ${
+                                className={
                                   u.status === 'approved' &&
                                   u.viewCompanies.length === 0
-                                    ? 'bg-amber-100 text-amber-800 font-medium'
-                                    : 'bg-slate-100 text-slate-700'
-                                }`}
+                                    ? 'text-amber-800 font-semibold'
+                                    : 'text-slate-600'
+                                }
                               >
-                                View:{' '}
-                                {u.viewCompanies.length > 0
-                                  ? u.viewCompanies.join(', ')
-                                  : 'None'}
+                                <span className="text-slate-400 font-normal">View:</span>{' '}
+                                <span className="font-medium">
+                                  {u.viewCompanies.length > 0
+                                    ? u.viewCompanies.join(', ')
+                                    : 'None'}
+                                </span>
                               </span>
                             </div>
 
@@ -2210,7 +2848,7 @@ export function AdminPage() {
               })}
             </div>
           )}
-        </div>
+        </motion.div>
       )}
 
       {/* TAB 2: COMPANIES */}
@@ -2271,6 +2909,7 @@ export function AdminPage() {
               {companies.map((c) => {
                 const compScopeKey = 'company-tab';
                 const isEquipOpen = openEquipKey === `${compScopeKey}::${c.id}`;
+                const isSpecsOpen = openSpecsCompanyId === c.id;
                 return (
                   <div key={c.id} className="px-5 sm:px-6 py-4">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -2319,9 +2958,10 @@ export function AdminPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            onClick={() =>
-                              handleOpenEquipmentEditor(compScopeKey, c)
-                            }
+                            onClick={() => {
+                              setOpenSpecsCompanyId(null);
+                              handleOpenEquipmentEditor(compScopeKey, c);
+                            }}
                             className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded cursor-pointer ${
                               isEquipOpen
                                 ? 'bg-teal-700 text-white'
@@ -2330,6 +2970,24 @@ export function AdminPage() {
                           >
                             <SlidersHorizontal className="w-3.5 h-3.5" />
                             Equipment Setup
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenEquipKey(null);
+                              setOpenSpecsCompanyId((prev) =>
+                                prev === c.id ? null : c.id
+                              );
+                            }}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded cursor-pointer ${
+                              isSpecsOpen
+                                ? 'bg-sky-700 text-white'
+                                : 'bg-sky-50 text-sky-800 hover:bg-sky-100'
+                            }`}
+                          >
+                            <Gauge className="w-3.5 h-3.5" />
+                            Tech Specs &amp; Water
                           </button>
 
                           {confirmDeleteCompanyId === c.id ? (
@@ -2378,6 +3036,13 @@ export function AdminPage() {
                     </div>
 
                     {isEquipOpen && renderEquipmentEditor(c)}
+                    {isSpecsOpen && (
+                      <OrganizationEquipmentSpecsPanel
+                        company={c}
+                        canEdit={true}
+                        onClose={() => setOpenSpecsCompanyId(null)}
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -2756,8 +3421,8 @@ export function AdminPage() {
           {/* Active Spreadsheet Status */}
           {sheetsConfig ? (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <div className="p-5 sm:p-6 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                <div className="space-y-1">
+              <div className="p-5 sm:p-6 border-b border-slate-200 flex flex-col xl:flex-row xl:items-start justify-between gap-5">
+                <div className="space-y-2 min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-base font-bold text-slate-900">
                       {sheetsConfig.spreadsheetTitle}
@@ -2773,44 +3438,130 @@ export function AdminPage() {
                     </span>
                     <span
                       className={`text-xs font-semibold ${
-                        sheetsConfig.syncMode === 'appsScript'
-                          ? 'text-emerald-700'
-                          : 'text-teal-700'
+                        sheetsConfig.autoSyncEnabled === false
+                          ? 'text-slate-500'
+                          : autoSyncState.status === 'needsAuth'
+                          ? 'text-amber-700'
+                          : autoSyncState.status === 'error'
+                          ? 'text-rose-700'
+                          : 'text-emerald-700'
                       }`}
                     >
                       {sheetsConfig.syncMode === 'appsScript'
-                        ? 'Auto-Sync Active (Apps Script)'
-                        : 'OAuth Manual Sync'}
+                        ? sheetsConfig.autoSyncEnabled === false
+                          ? 'Apps Script (Auto-Sync Paused)'
+                          : 'Auto Two-Way Sync Active (Apps Script)'
+                        : sheetsConfig.autoSyncEnabled === false
+                        ? 'OAuth Manual Sync'
+                        : autoSyncState.status === 'needsAuth'
+                        ? 'OAuth Auto-Sync (Reconnect Needed)'
+                        : 'Auto Two-Way Sync Active (OAuth)'}
                     </span>
                   </div>
-                  <div className="text-xs text-slate-500 flex flex-wrap items-center gap-2">
+
+                  <div className="text-xs text-slate-500 flex flex-wrap items-center gap-2 tabular-nums">
                     <span>
-                      Last Synced: {formatDateTime(sheetsConfig.lastSyncedAt?.toDate())}
+                      Last Synced:{' '}
+                      {formatDateTime(
+                        autoSyncState.lastSyncedAt || sheetsConfig.lastSyncedAt?.toDate()
+                      )}
                     </span>
                     <span aria-hidden="true">·</span>
-                    <span className="tabular-nums">
+                    <span>
                       {formatNumber(sheetsConfig.lastSyncedCount, 0)} rows synced
                     </span>
+                    {(autoSyncState.lastResultText || sheetsConfig.lastSyncSummary) && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-medium text-slate-700">
+                          {autoSyncState.lastResultText || sheetsConfig.lastSyncSummary}
+                        </span>
+                      </>
+                    )}
                   </div>
+
+                  {/* Two-Way Auto-Sync Control Strip */}
+                  <div className="pt-1 flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      disabled={togglingAutoSync || sheetsBusy || twoWayBusy}
+                      onClick={() =>
+                        void handleToggleAutoSyncClick(sheetsConfig.autoSyncEnabled === false)
+                      }
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer disabled:opacity-60 ${
+                        sheetsConfig.autoSyncEnabled === false
+                          ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
+                      }`}
+                    >
+                      {sheetsConfig.autoSyncEnabled === false ? (
+                        <>
+                          <Play className="w-3.5 h-3.5" />
+                          Enable Auto Two-Way Sync
+                        </>
+                      ) : (
+                        <>
+                          <Pause className="w-3.5 h-3.5" />
+                          Auto-Sync On (Pause)
+                        </>
+                      )}
+                    </button>
+
+                    <div className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                      <label htmlFor="autosync-interval" className="font-medium">
+                        Check Sheet every:
+                      </label>
+                      <select
+                        id="autosync-interval"
+                        value={sheetsConfig.autoSyncIntervalSec || 30}
+                        disabled={
+                          togglingAutoSync || sheetsConfig.autoSyncEnabled === false
+                        }
+                        onChange={(e) =>
+                          void handleChangeAutoSyncInterval(Number(e.target.value))
+                        }
+                        className="px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-600 disabled:bg-slate-100 disabled:text-slate-400 tabular-nums"
+                      >
+                        <option value={15}>15 seconds</option>
+                        <option value={30}>30 seconds</option>
+                        <option value={60}>1 minute</option>
+                        <option value={300}>5 minutes</option>
+                      </select>
+                    </div>
+
+                    {sheetsConfig.syncMode !== 'appsScript' && !googleAccessToken && (
+                      <button
+                        type="button"
+                        disabled={sheetsBusy}
+                        onClick={() => void handleAuthorizeGoogle()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-50 border border-amber-300 text-amber-900 rounded-lg hover:bg-amber-100 cursor-pointer"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        Reconnect Google Account
+                      </button>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-slate-600 leading-relaxed pt-1">
+                    Two-way sync automatically pushes app edits (including entries from approved operators) and pulls manual changes made inside Google Sheets (<span className="font-mono-num">Master_Backup</span> or any <span className="font-mono-num">Factory - YYYY</span> report tab for utilities &amp; plant generation) while keeping clean row heights, wrapped text, zebra striping, and live cross-tab formulas.
+                  </p>
+
                   {sheetsConfig.syncMode === 'appsScript' && (
-                    <div className="pt-1 space-y-2">
-                      <p className="text-xs text-emerald-700">
-                        Every save, update, or deletion automatically keeps <span className="font-mono-num">Master_Backup</span> (Tab 1), <span className="font-mono-num">Monthly_Summary</span> (Tab 2), and separate monthly tabs per factory (e.g., <span className="font-mono-num">Factory - Nov 2026</span>, <span className="font-mono-num">Factory - Jan 2027</span>) organized and up to date.
-                      </p>
+                    <div>
                       <button
                         type="button"
                         onClick={() => setShowAppsScriptUpgrade((prev) => !prev)}
                         className="text-xs font-semibold text-teal-700 hover:underline cursor-pointer"
                       >
                         {showAppsScriptUpgrade
-                          ? 'Hide Multi-Tab Apps Script Code'
-                          : 'View / Update Apps Script Code (v3: Import + Rename Tab Cleanup)'}
+                          ? 'Hide Formatted Report Apps Script Code'
+                          : 'View / Update Apps Script Code (v6: Two-Way Auto-Sync + Workbook Reader + Uniform Layout)'}
                       </button>
                     </div>
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
                   {sheetsConfig.spreadsheetUrl && (
                     <a
                       href={sheetsConfig.spreadsheetUrl}
@@ -2819,34 +3570,50 @@ export function AdminPage() {
                       className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 whitespace-nowrap"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
-                      Open in Google Sheets
+                      Open Sheet
                     </a>
                   )}
 
                   {sheetsConfig.syncMode !== 'appsScript' && (
                     <button
                       type="button"
-                      disabled={sheetsBusy || importingSheets}
+                      disabled={sheetsBusy || importingSheets || twoWayBusy}
                       onClick={() => void handlePreviewSheet()}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 whitespace-nowrap cursor-pointer"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 whitespace-nowrap cursor-pointer"
                     >
-                      Preview Rows
+                      Preview
                     </button>
                   )}
 
                   <button
                     type="button"
-                    disabled={sheetsBusy || importingSheets}
-                    onClick={() => void handleImportFromSheet()}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-60 whitespace-nowrap cursor-pointer"
+                    disabled={sheetsBusy || importingSheets || twoWayBusy}
+                    onClick={() => void handleTwoWaySyncNow()}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-teal-700 text-white rounded-lg hover:bg-teal-800 disabled:opacity-60 whitespace-nowrap cursor-pointer"
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    {importingSheets ? 'Importing...' : 'Import from Sheet'}
+                    <ArrowLeftRight
+                      className={`w-3.5 h-3.5 ${
+                        twoWayBusy || autoSyncState.status === 'syncing' ? 'animate-pulse' : ''
+                      }`}
+                    />
+                    {twoWayBusy || autoSyncState.status === 'syncing'
+                      ? 'Syncing...'
+                      : 'Two-Way Sync Now'}
                   </button>
 
                   <button
                     type="button"
-                    disabled={sheetsBusy || importingSheets}
+                    disabled={sheetsBusy || importingSheets || twoWayBusy}
+                    onClick={() => void handleImportFromSheet()}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-60 whitespace-nowrap cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    {importingSheets ? 'Pulling...' : 'Pull Sheet → App'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={sheetsBusy || importingSheets || twoWayBusy}
                     onClick={async () => {
                       if (sheetsConfig.syncMode === 'appsScript') {
                         await handleSyncAppsScriptNow();
@@ -2872,17 +3639,17 @@ export function AdminPage() {
                       }
                       setSyncModalOpen(true);
                     }}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-teal-700 text-white rounded-lg hover:bg-teal-800 disabled:opacity-60 whitespace-nowrap cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-white border border-slate-300 text-slate-800 rounded-lg hover:bg-slate-50 disabled:opacity-60 whitespace-nowrap cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    Sync All Entries ({formatNumber(entries.length, 0)})
+                    Force Push ({formatNumber(entries.length + generationEntries.length, 0)})
                   </button>
 
                   {confirmDisconnect ? (
                     <div className="inline-flex items-center gap-2">
                       <button
                         type="button"
-                        disabled={sheetsBusy || importingSheets}
+                        disabled={sheetsBusy || importingSheets || twoWayBusy}
                         onClick={() => void handleDisconnectSheet()}
                         className="px-3 py-2 text-xs font-semibold bg-rose-600 text-white rounded-lg hover:bg-rose-700 cursor-pointer"
                       >
@@ -2914,10 +3681,10 @@ export function AdminPage() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <h4 className="text-xs font-bold text-slate-900">
-                        Two-Way Factory × Month × Year Apps Script (v3)
+                        Formatted Factory × Year Executive Report Apps Script (v6)
                       </h4>
                       <p className="text-xs text-slate-600">
-                        Adds two-way import (doGet) and automatic cleanup of old tabs after factory renames. Replace your Apps Script with this code and deploy a New Version (Deploy → Manage deployments → Edit → New version → Deploy).
+                        Builds well-formed 1-row-per-day annual report tabs per factory (uniform row heights, wrapped headers &amp; notes, centered calendar columns, subtotal-safe conditional formatting, live cross-tab formulas in Executive_Summary, filterable zebra-striped Master_Backup, and full workbook reader doGet for two-way sync). Deploy a New Version (Deploy → Manage deployments → Edit → New version → Deploy).
                       </p>
                     </div>
                     <button
@@ -2960,7 +3727,7 @@ export function AdminPage() {
                   </div>
                   {previewRows.length === 0 ? (
                     <p className="text-xs text-slate-500">
-                      This sheet tab is currently empty. Click &quot;Sync All Entries&quot; to populate it.
+                      This sheet tab is currently empty. Click &quot;Two-Way Sync Now&quot; to populate it.
                     </p>
                   ) : (
                     <div className="overflow-x-auto bg-white border border-slate-200 rounded-lg">
@@ -2996,14 +3763,14 @@ export function AdminPage() {
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="text-base font-bold text-slate-900">
-                      Automatic Sync via Google Apps Script
+                      Automatic Two-Way Sync via Google Apps Script
                     </h2>
                     <span className="text-xs font-semibold text-emerald-700">
-                      Recommended · Auto-creates Factory × Month × Year tabs on Save / Edit / Delete
+                      Recommended · Two-Way Live-Formula Factory × Year Reports (v6)
                     </span>
                   </div>
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Connect any Google Sheet so every entry maintains a formatted <span className="font-mono-num">Master_Backup</span> main tab, a <span className="font-mono-num">Monthly_Summary</span> tab, and separate monthly tabs per factory (e.g., <span className="font-mono-num">Company A - Nov 2026</span>, <span className="font-mono-num">Company A - Jan 2027</span>).
+                    Connect any Google Sheet for automatic two-way sync: app changes update <span className="font-mono-num">Executive_Summary</span>, <span className="font-mono-num">Factory - YYYY</span> report tabs, and <span className="font-mono-num">Master_Backup</span> with clean formatting, and manual edits made in Google Sheets are pulled automatically into the app.
                   </p>
                 </div>
 
@@ -3291,11 +4058,80 @@ export function AdminPage() {
           open={syncModalOpen}
           spreadsheetTitle={sheetsConfig.spreadsheetTitle}
           sheetName={sheetsConfig.sheetName}
-          recordCount={entries.length}
+          recordCount={entries.length + generationEntries.length}
           syncing={syncingNow}
           onConfirm={() => void handleConfirmSync()}
           onCancel={() => setSyncModalOpen(false)}
         />
+      )}
+
+      {sheetsConfig && confirmAutoSyncModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="enable-autosync-title"
+        >
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl overflow-hidden shadow-lg">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <ArrowLeftRight className="w-5 h-5 text-teal-700" />
+                <h3
+                  id="enable-autosync-title"
+                  className="text-base font-bold text-slate-900"
+                >
+                  Enable Automatic Two-Way Sync
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmAutoSyncModalOpen(false)}
+                disabled={togglingAutoSync}
+                aria-label="Close dialog"
+                className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 text-sm text-slate-600 leading-relaxed">
+              <p>
+                Enabling automatic two-way sync will automatically read manual edits from{' '}
+                <span className="font-semibold text-slate-900">
+                  &quot;{sheetsConfig.spreadsheetTitle}&quot;
+                </span>{' '}
+                and push updated app records back every{' '}
+                <span className="font-semibold text-slate-900 tabular-nums">
+                  {pendingAutoInterval}s
+                </span>{' '}
+                while authorized.
+              </p>
+              <p className="text-xs text-slate-500">
+                Both <span className="font-mono-num">Master_Backup</span> and{' '}
+                <span className="font-mono-num">Factory - YYYY</span> report tabs are checked safely without overwriting manual Google Sheet changes.
+              </p>
+            </div>
+
+            <div className="px-5 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmAutoSyncModalOpen(false)}
+                disabled={togglingAutoSync}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmEnableOAuthAutoSync()}
+                disabled={togglingAutoSync}
+                className="px-4 py-2 text-sm font-semibold text-white bg-teal-700 rounded-lg hover:bg-teal-800 disabled:opacity-60 cursor-pointer"
+              >
+                {togglingAutoSync ? 'Enabling...' : 'Confirm & Enable'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

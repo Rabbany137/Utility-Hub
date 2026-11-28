@@ -7,19 +7,26 @@ import {
   useReducedMotion,
 } from 'motion/react';
 import {
+  Activity,
   AlertCircle,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   Calendar,
+  CheckCircle2,
+  Clock,
   Download,
   ExternalLink,
   FileSpreadsheet,
   Flame,
+  Gauge,
   GitCompareArrows,
   PlusCircle,
   RotateCcw,
   Search,
+  ShieldAlert,
+  ShieldCheck,
   Sun,
   TrendingDown,
   TrendingUp,
@@ -79,6 +86,10 @@ import {
   isGasLikeFuelMode,
   unitToFuelMode,
 } from '../utils/equipment';
+import {
+  buildAnalyticsValidationSummary,
+  type ValidationCategory,
+} from '../utils/analyticsValidation';
 import { GoogleSheetsSyncModal } from './GoogleSheetsSyncModal';
 
 type DatePreset =
@@ -90,10 +101,19 @@ type DatePreset =
   | 'all'
   | 'custom';
 
+type DashboardViewTab = 'overview' | 'hourly' | 'generation' | 'audit';
+type AuditLedgerFilter = 'all' | 'exceptions' | 'rate_outlier' | 'missing_hours' | 'zero_cost';
 type CompareMode = 'auto' | 'day' | 'month' | 'year' | 'range';
 type TrendGranularity = 'daily' | 'monthly';
 type FactoryChartLayout = 'horizontal' | 'vertical';
-type BenchmarkSortKey = 'company' | 'activeDays' | 'totalCost' | 'sharePct' | 'dailyAvg' | 'deltaPct';
+type BenchmarkSortKey =
+  | 'company'
+  | 'activeDays'
+  | 'totalHours'
+  | 'totalCost'
+  | 'sharePct'
+  | 'dailyAvg'
+  | 'deltaPct';
 
 interface DashboardPageProps {
   onNavigate?: (page: ActivePage) => void;
@@ -328,6 +348,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
   const [benchmarkSortDir, setBenchmarkSortDir] = useState<'asc' | 'desc'>('desc');
   const [benchmarkSearch, setBenchmarkSearch] = useState<string>('');
 
+  const [dashboardView, setDashboardView] = useState<DashboardViewTab>('overview');
+  const [auditFilter, setAuditFilter] = useState<AuditLedgerFilter>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [tableLimit, setTableLimit] = useState<number>(25);
 
@@ -404,7 +426,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         );
         setSyncToast({
           type: 'success',
-          text: `Synced ${formatNumber(count, 0)} records into Factory × Month tabs in "${sheetsConfig.spreadsheetTitle}".`,
+          text: `Synced ${formatNumber(count, 0)} entries into Executive_Summary, Factory × Year reports, and Master_Backup in "${sheetsConfig.spreadsheetTitle}".`,
         });
       } catch (err) {
         setSyncToast({
@@ -447,7 +469,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       setSyncModalOpen(false);
       setSyncToast({
         type: 'success',
-        text: `Synced ${formatNumber(count, 0)} records into Factory × Month tabs in "${sheetsConfig?.spreadsheetTitle}".`,
+        text: `Synced ${formatNumber(count, 0)} entries into Executive_Summary, Factory × Year reports, and Master_Backup in "${sheetsConfig?.spreadsheetTitle}".`,
       });
     } catch (err) {
       setSyncModalOpen(false);
@@ -859,6 +881,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
 
   const kpis = useMemo(() => {
     let totalCost = 0;
+    let totalUtilityHours = 0;
     let fuelRecordCount = 0;
     const activeDates = new Set<string>();
     const activeCompanies = new Set<string>();
@@ -874,10 +897,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         color: string;
         cost: number;
         consumption: number;
+        hours: number;
         entryCount: number;
         minUnitCost: number | null;
         maxUnitCost: number | null;
-        byCompany: Map<string, { cost: number; consumption: number }>;
+        byCompany: Map<string, { cost: number; consumption: number; hours: number }>;
       }
     >();
 
@@ -889,6 +913,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         color: u.color,
         cost: 0,
         consumption: 0,
+        hours: 0,
         entryCount: 0,
         minUnitCost: null,
         maxUnitCost: null,
@@ -897,7 +922,9 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     }
 
     for (const item of filteredEntries) {
+      const itemHours = Number(item.operatingHours) || 0;
       totalCost += item.cost;
+      if (itemHours > 0) totalUtilityHours += itemHours;
       activeDates.add(item.date);
       activeCompanies.add(item.company);
       byDateCost.set(item.date, (byDateCost.get(item.date) || 0) + item.cost);
@@ -914,6 +941,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         color: meta?.color || '#64748B',
         cost: 0,
         consumption: 0,
+        hours: 0,
         entryCount: 0,
         minUnitCost: null,
         maxUnitCost: null,
@@ -921,6 +949,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       };
       existing.cost += item.cost;
       existing.consumption += item.consumption;
+      if (itemHours > 0) existing.hours += itemHours;
       existing.entryCount += 1;
       if (item.consumption > 0) {
         const rate = item.cost / item.consumption;
@@ -932,9 +961,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       const compStat = existing.byCompany.get(item.company) || {
         cost: 0,
         consumption: 0,
+        hours: 0,
       };
       compStat.cost += item.cost;
       compStat.consumption += item.consumption;
+      if (itemHours > 0) compStat.hours += itemHours;
       existing.byCompany.set(item.company, compStat);
       byUtility.set(item.utilityId, existing);
     }
@@ -961,6 +992,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           color: alloc.color,
           cost: 0,
           consumption: 0,
+          hours: 0,
           entryCount: 0,
           minUnitCost: null,
           maxUnitCost: null,
@@ -983,6 +1015,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         const compStat = existing.byCompany.get(gen.company) || {
           cost: 0,
           consumption: 0,
+          hours: 0,
         };
         compStat.cost += alloc.cost;
         compStat.consumption += alloc.consumption;
@@ -1013,6 +1046,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             company,
             cost: val.cost,
             consumption: val.consumption,
+            hours: val.hours,
             avgRate: val.consumption > 0 ? val.cost / val.consumption : null,
           }))
           .sort((a, b) => b.cost - a.cost);
@@ -1024,6 +1058,9 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         return {
           ...u,
           avgUnitCost: u.consumption > 0 ? u.cost / u.consumption : null,
+          avgHourlyRate:
+            u.hours > 0 && u.consumption > 0 ? u.consumption / u.hours : null,
+          costPerHour: u.hours > 0 && u.cost > 0 ? u.cost / u.hours : null,
           sharePct: totalCost > 0 ? (u.cost / totalCost) * 100 : 0,
           factoryCount: companyRows.length,
           highestCompany,
@@ -1076,6 +1113,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
 
     return {
       totalCost,
+      totalUtilityHours,
       dailyAvg,
       activeDaysCount: activeDates.size,
       activeCompaniesCount: activeCompanies.size,
@@ -1300,7 +1338,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         dates: Set<string>;
         totalCost: number;
         totalConsumption: number;
-        byUtil: Map<string, { cost: number; consumption: number }>;
+        totalHours: number;
+        byUtil: Map<string, { cost: number; consumption: number; hours: number }>;
       }
     >();
 
@@ -1311,11 +1350,13 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         dates: new Set(),
         totalCost: 0,
         totalConsumption: 0,
+        totalHours: 0,
         byUtil: new Map(),
       });
     }
 
     for (const item of filteredEntries) {
+      const hrs = Number(item.operatingHours) || 0;
       let st = statsMap.get(item.company);
       if (!st) {
         st = {
@@ -1324,6 +1365,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           dates: new Set(),
           totalCost: 0,
           totalConsumption: 0,
+          totalHours: 0,
           byUtil: new Map(),
         };
         statsMap.set(item.company, st);
@@ -1332,10 +1374,16 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       st.dates.add(item.date);
       st.totalCost += item.cost;
       st.totalConsumption += item.consumption;
+      if (hrs > 0) st.totalHours += hrs;
 
-      const uStat = st.byUtil.get(item.utilityId) || { cost: 0, consumption: 0 };
+      const uStat = st.byUtil.get(item.utilityId) || {
+        cost: 0,
+        consumption: 0,
+        hours: 0,
+      };
       uStat.cost += item.cost;
       uStat.consumption += item.consumption;
+      if (hrs > 0) uStat.hours += hrs;
       st.byUtil.set(item.utilityId, uStat);
     }
 
@@ -1349,7 +1397,6 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           (!userAllowedUtilitiesSet || userAllowedUtilitiesSet.has(a.id)) &&
           (selectedUtilityId === 'ALL' || a.id === selectedUtilityId)
       );
-      if (allocs.length === 0) continue;
 
       let st = statsMap.get(gen.company);
       if (!st) {
@@ -1359,17 +1406,36 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           dates: new Set(),
           totalCost: 0,
           totalConsumption: 0,
+          totalHours: 0,
           byUtil: new Map(),
         };
         statsMap.set(gen.company, st);
       }
+
+      if (selectedUtilityId === 'ALL') {
+        const genAssetHrs =
+          (Number(gen.boilerOperatingHours) || 0) +
+          (Number(gen.generatorOperatingHours) || 0) +
+          (Number(gen.solarOperatingHours) || 0);
+        if (genAssetHrs > 0) {
+          st.totalHours += genAssetHrs;
+          st.dates.add(gen.date);
+        }
+      }
+
+      if (allocs.length === 0) continue;
+
       st.entryCount += 1;
       st.dates.add(gen.date);
 
       for (const alloc of allocs) {
         st.totalCost += alloc.cost;
         st.totalConsumption += alloc.consumption;
-        const uStat = st.byUtil.get(alloc.id) || { cost: 0, consumption: 0 };
+        const uStat = st.byUtil.get(alloc.id) || {
+          cost: 0,
+          consumption: 0,
+          hours: 0,
+        };
         uStat.cost += alloc.cost;
         uStat.consumption += alloc.consumption;
         st.byUtil.set(alloc.id, uStat);
@@ -1382,6 +1448,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       .map((st) => {
         const activeDays = st.dates.size;
         const dailyAvg = activeDays > 0 ? st.totalCost / activeDays : 0;
+        const costPerHour = st.totalHours > 0 ? st.totalCost / st.totalHours : null;
         const sharePct =
           kpis.totalCost > 0 ? (st.totalCost / kpis.totalCost) * 100 : 0;
         const prevComp = comparisonStats?.byCompany.get(st.company);
@@ -1407,6 +1474,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           company: st.company,
           entryCount: st.entryCount,
           activeDays,
+          totalHours: st.totalHours,
+          costPerHour,
           totalCost: st.totalCost,
           totalConsumption: st.totalConsumption,
           dailyAvg,
@@ -1427,6 +1496,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             return a.company.localeCompare(b.company) * dir;
           case 'activeDays':
             return (a.activeDays - b.activeDays) * dir;
+          case 'totalHours':
+            return (a.totalHours - b.totalHours) * dir;
           case 'sharePct':
             return (a.sharePct - b.sharePct) * dir;
           case 'dailyAvg':
@@ -1598,6 +1669,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     return kpis.utilityBreakdown
       .filter((u) => u.cost > 0)
       .map((u) => ({
+        id: u.id,
         name: u.name,
         value: u.cost,
         color: u.color,
@@ -1606,6 +1678,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         avgUnitCost: u.avgUnitCost,
       }));
   }, [kpis.utilityBreakdown]);
+
+  const hasFactorySpendData = useMemo(
+    () => companyComparisonData.some((r) => Number(r.totalCost || 0) > 0),
+    [companyComparisonData]
+  );
 
   const activeUtilities = useMemo(() => {
     if (selectedUtilityId === 'ALL') {
@@ -1643,6 +1720,22 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     );
   }, [trendData, activeUnitTrendUtil]);
 
+  const unitTrendDomain = useMemo<[number, number] | ['auto', 'auto']>(() => {
+    if (!activeUnitTrendUtil || unitTrendPoints.length === 0) return ['auto', 'auto'];
+    const vals = unitTrendPoints
+      .map((r) => Number(r[`rate_${activeUnitTrendUtil.id}`]))
+      .filter((n) => Number.isFinite(n) && n >= 0);
+    if (vals.length === 0) return ['auto', 'auto'];
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    if (Math.abs(max - min) < 0.01) {
+      const pad = Math.max(0.5, min * 0.15);
+      return [Math.max(0, Number((min - pad).toFixed(2))), Number((max + pad).toFixed(2))];
+    }
+    const pad = (max - min) * 0.14;
+    return [Math.max(0, Number((min - pad).toFixed(2))), Number((max + pad).toFixed(2))];
+  }, [activeUnitTrendUtil, unitTrendPoints]);
+
   const electricityUtility = useMemo(() => {
     return (
       visibleUtilities.find(
@@ -1673,9 +1766,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     let totalSteamKg = 0;
     let totalBoilerFuelQty = 0;
     let totalBoilerFuelCost = 0;
+    let totalBoilerHours = 0;
     let totalGenKwh = 0;
     let totalGenFuelQty = 0;
     let totalGenFuelCost = 0;
+    let totalGenHours = 0;
     let totalDieselGenKwh = 0;
     let totalDieselFuelQty = 0;
     let totalDieselFuelCost = 0;
@@ -1684,7 +1779,9 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     let totalGasFuelCost = 0;
     let totalSolarKwh = 0;
     let totalSolarSavings = 0;
+    let totalSolarHours = 0;
     let totalGridKwh = 0;
+    let totalGridHours = 0;
     let totalPeakGridKwh = 0;
     let totalPeakGridCost = 0;
     let totalOffPeakGridKwh = 0;
@@ -1701,7 +1798,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
               x &&
               typeof x.provider === 'string' &&
               x.provider.trim().length > 0 &&
-              (Number(x.kwh) > 0 || Number(x.cost) > 0)
+              (Number(x.kwh) > 0 || Number(x.cost) > 0 || Number(x.operatingHours) > 0)
           )
           .map((x) => {
             const tariff: GridTariffPeriod =
@@ -1710,6 +1807,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
               provider: String(x.provider).trim(),
               tariff,
               kwh: Number(x.kwh) || 0,
+              operatingHours: Number(x.operatingHours) || 0,
               unitCost: Number(x.unitCost) || 0,
               cost: Number(x.cost) || 0,
             };
@@ -1736,6 +1834,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         provider: string;
         kwh: number;
         cost: number;
+        hours: number;
         peakKwh: number;
         peakCost: number;
         offPeakKwh: number;
@@ -1748,6 +1847,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       unitIndex: number;
       deviceName: string;
       fuelMode: DeviceFuelMode;
+      hours: number;
       steamKg: number;
       fuelQty: number;
       fuelUnit: string;
@@ -1761,6 +1861,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       unitIndex: number;
       deviceName: string;
       fuelMode: DeviceFuelMode;
+      hours: number;
       kwh: number;
       fuelQty: number;
       fuelUnit: string;
@@ -1773,12 +1874,16 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       key: string;
       unitIndex: number;
       deviceName: string;
+      hours: number;
       kwh: number;
       savings: number;
     };
 
     const boilerFuelByUnitGlobal = new Map<string, number>();
     const genFuelByUnitGlobal = new Map<string, number>();
+    const globalBoilerUnitsMap = new Map<string, BoilerAgg>();
+    const globalGenUnitsMap = new Map<string, GenAgg>();
+    const globalSolarUnitsMap = new Map<string, SolarAgg>();
 
     const latestByCompany = new Map<string, GenerationEntry>();
     const byCompany = new Map<
@@ -1786,6 +1891,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       {
         company: string;
         boilerCount: number;
+        boilerHours: number;
         steamKg: number;
         boilerFuelQty: number;
         boilerFuelUnit: string;
@@ -1795,6 +1901,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         generatorCount: number;
         dieselGeneratorCount: number;
         gasGeneratorCount: number;
+        generatorHours: number;
         generatorKwh: number;
         generatorFuelQty: number;
         generatorFuelUnit: string;
@@ -1808,10 +1915,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         gasFuelCost: number;
         gasUnitsMap: Map<string, GenAgg>;
         solarSystemCount: number;
+        solarHours: number;
         solarKwh: number;
         solarSavings: number;
         solarUnitsMap: Map<string, SolarAgg>;
         gridKwh: number;
+        gridHours: number;
         peakGridKwh: number;
         peakGridCost: number;
         offPeakGridKwh: number;
@@ -1822,6 +1931,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             provider: string;
             kwh: number;
             cost: number;
+            hours: number;
             peakKwh: number;
             peakCost: number;
             offPeakKwh: number;
@@ -1838,6 +1948,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       byCompany.set(c, {
         company: c,
         boilerCount: 0,
+        boilerHours: 0,
         steamKg: 0,
         boilerFuelQty: 0,
         boilerFuelUnit: 'm³',
@@ -1847,6 +1958,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         generatorCount: 0,
         dieselGeneratorCount: 0,
         gasGeneratorCount: 0,
+        generatorHours: 0,
         generatorKwh: 0,
         generatorFuelQty: 0,
         generatorFuelUnit: 'm³',
@@ -1860,10 +1972,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         gasFuelCost: 0,
         gasUnitsMap: new Map(),
         solarSystemCount: 0,
+        solarHours: 0,
         solarKwh: 0,
         solarSavings: 0,
         solarUnitsMap: new Map(),
         gridKwh: 0,
+        gridHours: 0,
         peakGridKwh: 0,
         peakGridCost: 0,
         offPeakGridKwh: 0,
@@ -1873,16 +1987,19 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       });
     }
 
-    // Track grid electricity kWh across same date/company scope
+    // Track grid electricity kWh & operating hours across same date/company scope
     if (electricityUtility) {
       for (const e of visibleEntries) {
         if (e.utilityId !== electricityUtility.id) continue;
         if (e.date < dateBounds.start || e.date > dateBounds.end) continue;
         if (selectedCompany !== 'ALL' && e.company !== selectedCompany) continue;
+        const hrs = Number(e.operatingHours) || 0;
         totalGridKwh += e.consumption;
+        totalGridHours += hrs;
         const row = byCompany.get(e.company);
         if (row) {
           row.gridKwh += e.consumption;
+          row.gridHours += hrs;
         }
       }
     }
@@ -1928,18 +2045,23 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     const accumulateGenUnit = (
       targetMap: Map<string, GenAgg>,
       u: GeneratorUnitReading,
-      fallbackPrefix: string
+      fallbackPrefix: string,
+      companyPrefix = ''
     ) => {
       const idx = Number(u.unitIndex) || 1;
-      const key = u.deviceId?.trim() || `${fallbackPrefix}_${idx}`;
+      const baseKey = u.deviceId?.trim() || `${fallbackPrefix}_${idx}`;
+      const key = companyPrefix ? `${companyPrefix}::${baseKey}` : baseKey;
       const fMode: DeviceFuelMode =
         u.fuelMode || unitToFuelMode(u.fuelUnit || 'L');
       const unitCostTotal = getGenReadingTotalCost(u);
       const prev = targetMap.get(key) || {
         key,
         unitIndex: idx,
-        deviceName: u.deviceName?.trim() || `Generator #${idx}`,
+        deviceName: companyPrefix
+          ? `${companyPrefix} · ${u.deviceName?.trim() || `Generator #${idx}`}`
+          : u.deviceName?.trim() || `Generator #${idx}`,
         fuelMode: fMode,
+        hours: 0,
         kwh: 0,
         fuelQty: 0,
         fuelUnit: u.fuelUnit || 'L',
@@ -1947,11 +2069,16 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         secondaryFuelUnit: u.secondaryFuelUnit,
         fuelCost: 0,
       };
+      prev.hours += Number(u.operatingHours) || 0;
       prev.kwh += Number(u.kwh) || 0;
       prev.fuelQty += Number(u.fuelQty) || 0;
       prev.secondaryFuelQty += Number(u.secondaryFuelQty) || 0;
       prev.fuelCost += unitCostTotal;
-      if (u.deviceName?.trim()) prev.deviceName = u.deviceName.trim();
+      if (u.deviceName?.trim()) {
+        prev.deviceName = companyPrefix
+          ? `${companyPrefix} · ${u.deviceName.trim()}`
+          : u.deviceName.trim();
+      }
       if (u.fuelMode) prev.fuelMode = u.fuelMode;
       if (u.fuelUnit) prev.fuelUnit = u.fuelUnit;
       if (u.secondaryFuelUnit) prev.secondaryFuelUnit = u.secondaryFuelUnit;
@@ -1960,18 +2087,23 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
 
     const accumulateBoilerUnit = (
       targetMap: Map<string, BoilerAgg>,
-      u: BoilerUnitReading
+      u: BoilerUnitReading,
+      companyPrefix = ''
     ) => {
       const idx = Number(u.unitIndex) || 1;
-      const key = u.deviceId?.trim() || `boiler_${idx}`;
+      const baseKey = u.deviceId?.trim() || `boiler_${idx}`;
+      const key = companyPrefix ? `${companyPrefix}::${baseKey}` : baseKey;
       const fMode: DeviceFuelMode =
         u.fuelMode || unitToFuelMode(u.fuelUnit || 'm³');
       const unitCostTotal = getBoilerReadingTotalCost(u);
       const prev = targetMap.get(key) || {
         key,
         unitIndex: idx,
-        deviceName: u.deviceName?.trim() || `Boiler #${idx}`,
+        deviceName: companyPrefix
+          ? `${companyPrefix} · ${u.deviceName?.trim() || `Boiler #${idx}`}`
+          : u.deviceName?.trim() || `Boiler #${idx}`,
         fuelMode: fMode,
+        hours: 0,
         steamKg: 0,
         fuelQty: 0,
         fuelUnit: u.fuelUnit || 'm³',
@@ -1979,11 +2111,16 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         secondaryFuelUnit: u.secondaryFuelUnit,
         fuelCost: 0,
       };
+      prev.hours += Number(u.operatingHours) || 0;
       prev.steamKg += Number(u.steamKg) || 0;
       prev.fuelQty += Number(u.fuelQty) || 0;
       prev.secondaryFuelQty += Number(u.secondaryFuelQty) || 0;
       prev.fuelCost += unitCostTotal;
-      if (u.deviceName?.trim()) prev.deviceName = u.deviceName.trim();
+      if (u.deviceName?.trim()) {
+        prev.deviceName = companyPrefix
+          ? `${companyPrefix} · ${u.deviceName.trim()}`
+          : u.deviceName.trim();
+      }
       if (u.fuelMode) prev.fuelMode = u.fuelMode;
       if (u.fuelUnit) prev.fuelUnit = u.fuelUnit;
       if (u.secondaryFuelUnit) prev.secondaryFuelUnit = u.secondaryFuelUnit;
@@ -1992,22 +2129,35 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
 
     const accumulateSolarUnit = (
       targetMap: Map<string, SolarAgg>,
-      u: SolarUnitReading
+      u: SolarUnitReading,
+      companyPrefix = ''
     ) => {
       const idx = Number(u.unitIndex) || 1;
-      const key = u.deviceId?.trim() || `solar_${idx}`;
+      const baseKey = u.deviceId?.trim() || `solar_${idx}`;
+      const key = companyPrefix ? `${companyPrefix}::${baseKey}` : baseKey;
       const prev = targetMap.get(key) || {
         key,
         unitIndex: idx,
-        deviceName: u.deviceName?.trim() || `Solar #${idx}`,
+        deviceName: companyPrefix
+          ? `${companyPrefix} · ${u.deviceName?.trim() || `Solar #${idx}`}`
+          : u.deviceName?.trim() || `Solar #${idx}`,
+        hours: 0,
         kwh: 0,
         savings: 0,
       };
+      prev.hours += Number(u.operatingHours) || 0;
       prev.kwh += Number(u.kwh) || 0;
       prev.savings += Number(u.savings) || 0;
-      if (u.deviceName?.trim()) prev.deviceName = u.deviceName.trim();
+      if (u.deviceName?.trim()) {
+        prev.deviceName = companyPrefix
+          ? `${companyPrefix} · ${u.deviceName.trim()}`
+          : u.deviceName.trim();
+      }
       targetMap.set(key, prev);
     };
+
+    const multiFactoryInScope =
+      selectedCompany === 'ALL' && visibleCompanyNames.length > 1;
 
     for (const item of filteredGenerationEntries) {
       const dieselKwh = item.dieselGenKwh || 0;
@@ -2017,12 +2167,43 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       const gasQty = item.gasFuelQty || 0;
       const gasCost = item.gasFuelCost || 0;
 
+      const parsedUnits = parseUnitReadings(item.unitReadings);
+
+      const itemBoilerHrs =
+        Number(item.boilerOperatingHours) ||
+        (parsedUnits?.boilerUnits || []).reduce(
+          (acc, u) => acc + (Number(u.operatingHours) || 0),
+          0
+        );
+      const itemGenHrs =
+        Number(item.generatorOperatingHours) ||
+        (parsedUnits?.generatorUnits || []).reduce(
+          (acc, u) => acc + (Number(u.operatingHours) || 0),
+          0
+        ) +
+          (parsedUnits?.dieselGenUnits || []).reduce(
+            (acc, u) => acc + (Number(u.operatingHours) || 0),
+            0
+          ) +
+          (parsedUnits?.gasGenUnits || []).reduce(
+            (acc, u) => acc + (Number(u.operatingHours) || 0),
+            0
+          );
+      const itemSolarHrs =
+        Number(item.solarOperatingHours) ||
+        (parsedUnits?.solarUnitDetails || []).reduce(
+          (acc, u) => acc + (Number(u.operatingHours) || 0),
+          0
+        );
+
       totalSteamKg += item.steamKg;
       totalBoilerFuelQty += item.boilerFuelQty;
       totalBoilerFuelCost += item.boilerFuelCost;
+      totalBoilerHours += itemBoilerHrs;
       totalGenKwh += item.generatorKwh;
       totalGenFuelQty += item.generatorFuelQty;
       totalGenFuelCost += item.generatorFuelCost;
+      totalGenHours += itemGenHrs;
       totalDieselGenKwh += dieselKwh;
       totalDieselFuelQty += dieselQty;
       totalDieselFuelCost += dieselCost;
@@ -2031,6 +2212,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       totalGasFuelCost += gasCost;
       totalSolarKwh += item.solarKwh;
       totalSolarSavings += item.solarSavings;
+      totalSolarHours += itemSolarHrs;
 
       if (item.boilerFuelUnit && item.boilerFuelUnit !== 'Mixed') {
         boilerUnitCounts.set(
@@ -2053,6 +2235,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       const comp = byCompany.get(item.company) || {
         company: item.company,
         boilerCount: 0,
+        boilerHours: 0,
         steamKg: 0,
         boilerFuelQty: 0,
         boilerFuelUnit: item.boilerFuelUnit || 'm³',
@@ -2062,6 +2245,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         generatorCount: 0,
         dieselGeneratorCount: 0,
         gasGeneratorCount: 0,
+        generatorHours: 0,
         generatorKwh: 0,
         generatorFuelQty: 0,
         generatorFuelUnit: item.generatorFuelUnit || 'm³',
@@ -2075,10 +2259,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         gasFuelCost: 0,
         gasUnitsMap: new Map<string, GenAgg>(),
         solarSystemCount: 0,
+        solarHours: 0,
         solarKwh: 0,
         solarSavings: 0,
         solarUnitsMap: new Map<string, SolarAgg>(),
         gridKwh: 0,
+        gridHours: 0,
         peakGridKwh: 0,
         peakGridCost: 0,
         offPeakGridKwh: 0,
@@ -2086,10 +2272,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         gridProviders: new Map(),
         logCount: 0,
       };
+      comp.boilerHours += itemBoilerHrs;
       comp.steamKg += item.steamKg;
       comp.boilerFuelQty += item.boilerFuelQty;
       comp.boilerFuelCost += item.boilerFuelCost;
       comp.boilerFuelUnit = item.boilerFuelUnit || comp.boilerFuelUnit;
+      comp.generatorHours += itemGenHrs;
       comp.generatorKwh += item.generatorKwh;
       comp.generatorFuelQty += item.generatorFuelQty;
       comp.generatorFuelCost += item.generatorFuelCost;
@@ -2098,16 +2286,19 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       comp.dieselFuelCost += dieselCost;
       comp.gasGenKwh += gasKwh;
       comp.gasFuelCost += gasCost;
+      comp.solarHours += itemSolarHrs;
       comp.solarKwh += item.solarKwh;
       comp.solarSavings += item.solarSavings;
       comp.logCount += 1;
 
-      const parsedUnits = parseUnitReadings(item.unitReadings);
+      const globalPrefix = multiFactoryInScope ? item.company : '';
+
       if (parsedUnits?.boilerUnits && Array.isArray(parsedUnits.boilerUnits) && parsedUnits.boilerUnits.length > 0) {
         for (const bu of parsedUnits.boilerUnits) {
           const totalUnitCost = getBoilerReadingTotalCost(bu);
           const pQty = Number(bu.fuelQty) || 0;
           const sQty = Number(bu.secondaryFuelQty) || 0;
+          const bHrs = Number(bu.operatingHours) || 0;
           if (pQty > 0 && bu.fuelUnit) {
             boilerFuelByUnitGlobal.set(
               bu.fuelUnit,
@@ -2132,9 +2323,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             (Number(bu.steamKg) || 0) > 0 ||
             pQty > 0 ||
             sQty > 0 ||
-            totalUnitCost > 0
+            totalUnitCost > 0 ||
+            bHrs > 0
           ) {
             accumulateBoilerUnit(comp.boilerUnitsMap, bu);
+            accumulateBoilerUnit(globalBoilerUnitsMap, bu, globalPrefix);
           }
         }
       } else if (item.boilerFuelQty > 0 && item.boilerFuelUnit) {
@@ -2156,6 +2349,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           const totalUnitCost = getGenReadingTotalCost(gu);
           const pQty = Number(gu.fuelQty) || 0;
           const sQty = Number(gu.secondaryFuelQty) || 0;
+          const gHrs = Number(gu.operatingHours) || 0;
           if (pQty > 0 && gu.fuelUnit) {
             genFuelByUnitGlobal.set(
               gu.fuelUnit,
@@ -2180,9 +2374,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             (Number(gu.kwh) || 0) > 0 ||
             pQty > 0 ||
             sQty > 0 ||
-            totalUnitCost > 0
+            totalUnitCost > 0 ||
+            gHrs > 0
           ) {
             accumulateGenUnit(comp.generatorUnitsMap, gu, 'gen');
+            accumulateGenUnit(globalGenUnitsMap, gu, 'gen', globalPrefix);
             const fMode = gu.fuelMode || unitToFuelMode(gu.fuelUnit || 'L');
             if (fMode === 'diesel') {
               accumulateGenUnit(comp.dieselUnitsMap, gu, 'diesel_gen');
@@ -2198,6 +2394,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         ) {
           for (const du of parsedUnits.dieselGenUnits) {
             const pQty = Number(du.fuelQty) || 0;
+            const dHrs = Number(du.operatingHours) || 0;
             if (pQty > 0 && du.fuelUnit) {
               genFuelByUnitGlobal.set(
                 du.fuelUnit,
@@ -2211,20 +2408,24 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             if (
               (Number(du.kwh) || 0) > 0 ||
               pQty > 0 ||
-              getGenReadingTotalCost(du) > 0
+              getGenReadingTotalCost(du) > 0 ||
+              dHrs > 0
             ) {
               accumulateGenUnit(comp.dieselUnitsMap, du, 'diesel_gen');
-              accumulateGenUnit(
-                comp.generatorUnitsMap,
-                { ...du, deviceName: du.deviceName || `Diesel Gen #${du.unitIndex}`, fuelMode: 'diesel' },
-                'diesel_gen'
-              );
+              const dCompat = {
+                ...du,
+                deviceName: du.deviceName || `Diesel Gen #${du.unitIndex}`,
+                fuelMode: 'diesel' as DeviceFuelMode,
+              };
+              accumulateGenUnit(comp.generatorUnitsMap, dCompat, 'diesel_gen');
+              accumulateGenUnit(globalGenUnitsMap, dCompat, 'diesel_gen', globalPrefix);
             }
           }
         }
         if (parsedUnits?.gasGenUnits && Array.isArray(parsedUnits.gasGenUnits)) {
           for (const gu of parsedUnits.gasGenUnits) {
             const pQty = Number(gu.fuelQty) || 0;
+            const gHrs = Number(gu.operatingHours) || 0;
             if (pQty > 0 && gu.fuelUnit) {
               genFuelByUnitGlobal.set(
                 gu.fuelUnit,
@@ -2238,14 +2439,17 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             if (
               (Number(gu.kwh) || 0) > 0 ||
               pQty > 0 ||
-              getGenReadingTotalCost(gu) > 0
+              getGenReadingTotalCost(gu) > 0 ||
+              gHrs > 0
             ) {
               accumulateGenUnit(comp.gasUnitsMap, gu, 'gas_gen');
-              accumulateGenUnit(
-                comp.generatorUnitsMap,
-                { ...gu, deviceName: gu.deviceName || `Gas Gen #${gu.unitIndex}`, fuelMode: 'gas' },
-                'gas_gen'
-              );
+              const gCompat = {
+                ...gu,
+                deviceName: gu.deviceName || `Gas Gen #${gu.unitIndex}`,
+                fuelMode: 'gas' as DeviceFuelMode,
+              };
+              accumulateGenUnit(comp.generatorUnitsMap, gCompat, 'gas_gen');
+              accumulateGenUnit(globalGenUnitsMap, gCompat, 'gas_gen', globalPrefix);
             }
           }
         }
@@ -2256,14 +2460,20 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         Array.isArray(parsedUnits.solarUnitDetails)
       ) {
         for (const su of parsedUnits.solarUnitDetails) {
-          if ((Number(su.kwh) || 0) > 0 || (Number(su.savings) || 0) > 0) {
+          if (
+            (Number(su.kwh) || 0) > 0 ||
+            (Number(su.savings) || 0) > 0 ||
+            (Number(su.operatingHours) || 0) > 0
+          ) {
             accumulateSolarUnit(comp.solarUnitsMap, su);
+            accumulateSolarUnit(globalSolarUnitsMap, su, globalPrefix);
           }
         }
       }
 
       const parsedGrid = parseGridBreakdown(item.gridProviderBreakdown);
       for (const gp of parsedGrid) {
+        const gpHrs = Number(gp.operatingHours) || 0;
         if (gp.tariff === 'peak') {
           totalPeakGridKwh += gp.kwh;
           totalPeakGridCost += gp.cost;
@@ -2280,6 +2490,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           provider: gp.provider,
           kwh: 0,
           cost: 0,
+          hours: 0,
           peakKwh: 0,
           peakCost: 0,
           offPeakKwh: 0,
@@ -2287,6 +2498,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         };
         gPrev.kwh += gp.kwh;
         gPrev.cost += gp.cost;
+        gPrev.hours += gpHrs;
         if (gp.tariff === 'peak') {
           gPrev.peakKwh += gp.kwh;
           gPrev.peakCost += gp.cost;
@@ -2300,6 +2512,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           provider: gp.provider,
           kwh: 0,
           cost: 0,
+          hours: 0,
           peakKwh: 0,
           peakCost: 0,
           offPeakKwh: 0,
@@ -2307,6 +2520,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         };
         cPrev.kwh += gp.kwh;
         cPrev.cost += gp.cost;
+        cPrev.hours += gpHrs;
         if (gp.tariff === 'peak') {
           cPrev.peakKwh += gp.kwh;
           cPrev.peakCost += gp.cost;
@@ -2391,6 +2605,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             b.fuelMode !== 'dual' && b.steamKg > 0 && b.fuelQty > 0
               ? b.steamKg / b.fuelQty
               : null,
+          steamPerHour: b.hours > 0 && b.steamKg > 0 ? b.steamKg / b.hours : null,
+          fuelPerHour: b.hours > 0 && b.fuelQty > 0 ? b.fuelQty / b.hours : null,
         }));
 
     const finalizeGenUnits = (map: Map<string, GenAgg>) =>
@@ -2404,10 +2620,17 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             g.fuelMode !== 'dual' && g.kwh > 0 && g.fuelQty > 0
               ? g.kwh / g.fuelQty
               : null,
+          avgKw: g.hours > 0 && g.kwh > 0 ? g.kwh / g.hours : null,
+          fuelPerHour: g.hours > 0 && g.fuelQty > 0 ? g.fuelQty / g.hours : null,
         }));
 
     const finalizeSolarUnits = (map: Map<string, SolarAgg>) =>
-      Array.from(map.values()).sort((a, b) => a.unitIndex - b.unitIndex);
+      Array.from(map.values())
+        .sort((a, b) => a.unitIndex - b.unitIndex)
+        .map((s) => ({
+          ...s,
+          avgKw: s.hours > 0 && s.kwh > 0 ? s.kwh / s.hours : null,
+        }));
 
     const factoryRows = Array.from(byCompany.values())
       .filter((r) => r.logCount > 0 || r.gridKwh > 0)
@@ -2422,6 +2645,10 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             r.steamKg > 0 && r.boilerFuelCost > 0
               ? r.boilerFuelCost / r.steamKg
               : null,
+          steamPerHour:
+            r.boilerHours > 0 && r.steamKg > 0
+              ? r.steamKg / r.boilerHours
+              : null,
           steamYield:
             boilerHasSingleFuel && r.steamKg > 0 && r.boilerFuelQty > 0
               ? r.steamKg / r.boilerFuelQty
@@ -2433,6 +2660,10 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           genCostPerKwh:
             r.generatorKwh > 0 && r.generatorFuelCost > 0
               ? r.generatorFuelCost / r.generatorKwh
+              : null,
+          genAvgKw:
+            r.generatorHours > 0 && r.generatorKwh > 0
+              ? r.generatorKwh / r.generatorHours
               : null,
           dieselCostPerKwh:
             r.dieselGenKwh > 0 && r.dieselFuelCost > 0
@@ -2449,6 +2680,10 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           dieselUnits: finalizeGenUnits(r.dieselUnitsMap),
           gasUnits: finalizeGenUnits(r.gasUnitsMap),
           solarUnits: finalizeSolarUnits(r.solarUnitsMap),
+          solarAvgKw:
+            r.solarHours > 0 && r.solarKwh > 0
+              ? r.solarKwh / r.solarHours
+              : null,
           genYield:
             genHasSingleFuel && r.generatorKwh > 0 && r.generatorFuelQty > 0
               ? r.generatorKwh / r.generatorFuelQty
@@ -2485,7 +2720,6 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       a.date.localeCompare(b.date)
     );
 
-    // Compare deltas if comparison period has generation logs
     let prevSteamKg = 0;
     let prevGenKwh = 0;
     let prevSolarKwh = 0;
@@ -2510,12 +2744,18 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       totalDieselGenerators,
       totalGasGenerators,
       totalSolarSystems,
+      totalBoilerHours,
       totalSteamKg,
       totalBoilerFuelQty,
       totalBoilerFuelCost,
       boilerFuelBreakdown,
       topBoilerFuelUnit,
       singleScopeBoilerUnits,
+      allBoilerUnits: finalizeBoilerUnits(globalBoilerUnitsMap),
+      avgSteamPerHour:
+        totalBoilerHours > 0 && totalSteamKg > 0
+          ? totalSteamKg / totalBoilerHours
+          : null,
       avgSteamCostPerKg:
         totalSteamKg > 0 && totalBoilerFuelCost > 0
           ? totalBoilerFuelCost / totalSteamKg
@@ -2526,11 +2766,17 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         totalBoilerFuelQty > 0
           ? totalSteamKg / totalBoilerFuelQty
           : null,
+      totalGenHours,
       totalGenKwh,
       totalGenFuelQty,
       totalGenFuelCost,
       genFuelBreakdown,
       singleScopeGeneratorUnits,
+      allGenUnits: finalizeGenUnits(globalGenUnitsMap),
+      avgGenKw:
+        totalGenHours > 0 && totalGenKwh > 0
+          ? totalGenKwh / totalGenHours
+          : null,
       totalDieselGenKwh,
       totalDieselFuelQty,
       totalDieselFuelCost,
@@ -2556,10 +2802,21 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         genFuelByUnitGlobal.size <= 1 && totalGenKwh > 0 && totalGenFuelQty > 0
           ? totalGenKwh / totalGenFuelQty
           : null,
+      totalSolarHours,
       totalSolarKwh,
       totalSolarSavings,
       singleScopeSolarUnits,
+      allSolarUnits: finalizeSolarUnits(globalSolarUnitsMap),
+      avgSolarKw:
+        totalSolarHours > 0 && totalSolarKwh > 0
+          ? totalSolarKwh / totalSolarHours
+          : null,
       totalGridKwh,
+      totalGridHours,
+      avgGridKw:
+        totalGridHours > 0 && totalGridKwh > 0
+          ? totalGridKwh / totalGridHours
+          : null,
       totalPeakGridKwh,
       totalPeakGridCost,
       avgPeakGridRate:
@@ -2603,23 +2860,300 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     trendGranularity,
   ]);
 
+  const powerMixFactoryRows = useMemo(
+    () => generationAnalytics.factoryRows.filter((r) => r.totalPower > 0),
+    [generationAnalytics.factoryRows]
+  );
+
+  const hourlyConsumptionAnalytics = useMemo(() => {
+    const totalPlantEquipmentHours =
+      generationAnalytics.totalBoilerHours +
+      generationAnalytics.totalGenHours +
+      generationAnalytics.totalSolarHours;
+    const totalAssetHours = kpis.totalUtilityHours + totalPlantEquipmentHours;
+    const blendedCostPerHour =
+      totalAssetHours > 0 && kpis.totalCost > 0
+        ? kpis.totalCost / totalAssetHours
+        : null;
+
+    type HourlyAssetRow = {
+      id: string;
+      category: 'Utility' | 'Boiler' | 'Generator' | 'Solar';
+      name: string;
+      color: string;
+      quantity: number;
+      unit: string;
+      hours: number;
+      hourlyRate: number | null;
+      hourlyRateLabel: string;
+      cost: number;
+      costPerHour: number | null;
+    };
+
+    const rows: HourlyAssetRow[] = [];
+
+    for (const u of kpis.utilityBreakdown) {
+      if (u.hours <= 0 && u.consumption <= 0 && u.cost <= 0) continue;
+      rows.push({
+        id: `util_${u.id}`,
+        category: 'Utility',
+        name: u.name,
+        color: u.color,
+        quantity: u.consumption,
+        unit: u.unit || 'unit',
+        hours: u.hours,
+        hourlyRate: u.avgHourlyRate,
+        hourlyRateLabel:
+          u.avgHourlyRate !== null
+            ? `${formatNumber(u.avgHourlyRate, 2)} ${u.unit}/hr`
+            : '—',
+        cost: u.cost,
+        costPerHour: u.costPerHour,
+      });
+    }
+
+    if (canViewPlantGeneration && selectedUtilityId === 'ALL') {
+      if (generationAnalytics.allBoilerUnits.length > 0) {
+        for (const b of generationAnalytics.allBoilerUnits) {
+          if (b.hours <= 0 && b.steamKg <= 0 && b.fuelCost <= 0) continue;
+          rows.push({
+            id: `boiler_${b.key}`,
+            category: 'Boiler',
+            name: b.deviceName,
+            color: '#EA580C',
+            quantity: b.steamKg,
+            unit: 'kg steam',
+            hours: b.hours,
+            hourlyRate: b.steamPerHour,
+            hourlyRateLabel:
+              b.steamPerHour !== null
+                ? `${formatNumber(b.steamPerHour, 1)} kg/hr`
+                : '—',
+            cost: b.fuelCost,
+            costPerHour:
+              b.hours > 0 && b.fuelCost > 0 ? b.fuelCost / b.hours : null,
+          });
+        }
+      } else if (
+        generationAnalytics.totalBoilerHours > 0 ||
+        generationAnalytics.totalSteamKg > 0
+      ) {
+        rows.push({
+          id: 'boiler_combined',
+          category: 'Boiler',
+          name: 'All Boilers (Steam)',
+          color: '#EA580C',
+          quantity: generationAnalytics.totalSteamKg,
+          unit: 'kg steam',
+          hours: generationAnalytics.totalBoilerHours,
+          hourlyRate: generationAnalytics.avgSteamPerHour,
+          hourlyRateLabel:
+            generationAnalytics.avgSteamPerHour !== null
+              ? `${formatNumber(generationAnalytics.avgSteamPerHour, 1)} kg/hr`
+              : '—',
+          cost: generationAnalytics.totalBoilerFuelCost,
+          costPerHour:
+            generationAnalytics.totalBoilerHours > 0 &&
+            generationAnalytics.totalBoilerFuelCost > 0
+              ? generationAnalytics.totalBoilerFuelCost /
+                generationAnalytics.totalBoilerHours
+              : null,
+        });
+      }
+
+      if (generationAnalytics.allGenUnits.length > 0) {
+        for (const g of generationAnalytics.allGenUnits) {
+          if (g.hours <= 0 && g.kwh <= 0 && g.fuelCost <= 0) continue;
+          rows.push({
+            id: `gen_${g.key}`,
+            category: 'Generator',
+            name: g.deviceName,
+            color: '#D97706',
+            quantity: g.kwh,
+            unit: 'kWh',
+            hours: g.hours,
+            hourlyRate: g.avgKw,
+            hourlyRateLabel:
+              g.avgKw !== null ? `${formatNumber(g.avgKw, 1)} kW` : '—',
+            cost: g.fuelCost,
+            costPerHour:
+              g.hours > 0 && g.fuelCost > 0 ? g.fuelCost / g.hours : null,
+          });
+        }
+      } else if (
+        generationAnalytics.totalGenHours > 0 ||
+        generationAnalytics.totalGenKwh > 0
+      ) {
+        rows.push({
+          id: 'gen_combined',
+          category: 'Generator',
+          name: 'Captive Generators',
+          color: '#D97706',
+          quantity: generationAnalytics.totalGenKwh,
+          unit: 'kWh',
+          hours: generationAnalytics.totalGenHours,
+          hourlyRate: generationAnalytics.avgGenKw,
+          hourlyRateLabel:
+            generationAnalytics.avgGenKw !== null
+              ? `${formatNumber(generationAnalytics.avgGenKw, 1)} kW`
+              : '—',
+          cost: generationAnalytics.totalGenFuelCost,
+          costPerHour:
+            generationAnalytics.totalGenHours > 0 &&
+            generationAnalytics.totalGenFuelCost > 0
+              ? generationAnalytics.totalGenFuelCost /
+                generationAnalytics.totalGenHours
+              : null,
+        });
+      }
+
+      if (generationAnalytics.allSolarUnits.length > 0) {
+        for (const s of generationAnalytics.allSolarUnits) {
+          if (s.hours <= 0 && s.kwh <= 0) continue;
+          rows.push({
+            id: `solar_${s.key}`,
+            category: 'Solar',
+            name: s.deviceName,
+            color: '#059669',
+            quantity: s.kwh,
+            unit: 'kWh',
+            hours: s.hours,
+            hourlyRate: s.avgKw,
+            hourlyRateLabel:
+              s.avgKw !== null ? `${formatNumber(s.avgKw, 1)} kW` : '—',
+            cost: 0,
+            costPerHour: null,
+          });
+        }
+      } else if (
+        generationAnalytics.totalSolarHours > 0 ||
+        generationAnalytics.totalSolarKwh > 0
+      ) {
+        rows.push({
+          id: 'solar_combined',
+          category: 'Solar',
+          name: 'Solar PV Array',
+          color: '#059669',
+          quantity: generationAnalytics.totalSolarKwh,
+          unit: 'kWh',
+          hours: generationAnalytics.totalSolarHours,
+          hourlyRate: generationAnalytics.avgSolarKw,
+          hourlyRateLabel:
+            generationAnalytics.avgSolarKw !== null
+              ? `${formatNumber(generationAnalytics.avgSolarKw, 1)} kW`
+              : '—',
+          cost: 0,
+          costPerHour: null,
+        });
+      }
+    }
+
+    const chartRows = rows
+      .filter((r) => r.hours > 0)
+      .sort((a, b) => b.hours - a.hours)
+      .slice(0, 12);
+
+    return {
+      totalUtilityHours: kpis.totalUtilityHours,
+      totalPlantEquipmentHours,
+      totalAssetHours,
+      blendedCostPerHour,
+      rows,
+      chartRows,
+    };
+  }, [
+    kpis.utilityBreakdown,
+    kpis.totalUtilityHours,
+    kpis.totalCost,
+    generationAnalytics,
+    canViewPlantGeneration,
+    selectedUtilityId,
+  ]);
+
+  const validationSummary = useMemo(() => {
+    const scopeCompanies =
+      selectedCompany === 'ALL' ? visibleCompanyNames : [selectedCompany];
+    const startBound =
+      dateBounds.start === '0000-01-01'
+        ? visibleEntries.reduce(
+            (min, e) => (e.date < min ? e.date : min),
+            todayISO
+          )
+        : dateBounds.start;
+    const endBound =
+      dateBounds.end === '9999-12-31' ? todayISO : dateBounds.end;
+
+    return buildAnalyticsValidationSummary({
+      filteredEntries,
+      allVisibleEntries: visibleEntries,
+      filteredGenerationEntries,
+      utilities: visibleUtilities,
+      visibleCompanies: scopeCompanies,
+      startDate: startBound,
+      endDate: endBound,
+      todayISO,
+    });
+  }, [
+    selectedCompany,
+    visibleCompanyNames,
+    dateBounds,
+    visibleEntries,
+    filteredEntries,
+    filteredGenerationEntries,
+    visibleUtilities,
+    todayISO,
+  ]);
+
+  useEffect(() => {
+    if (!canViewPlantGeneration && dashboardView === 'generation') {
+      setDashboardView('overview');
+    }
+  }, [canViewPlantGeneration, dashboardView]);
+
   const tableRows = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    return q
-      ? filteredEntries.filter((row) => {
-          const uName = (
-            utilityMap.get(row.utilityId)?.name || row.utilityName
-          ).toLowerCase();
-          return (
-            row.company.toLowerCase().includes(q) ||
-            uName.includes(q) ||
-            row.date.includes(q) ||
-            row.note.toLowerCase().includes(q) ||
-            row.enteredByName.toLowerCase().includes(q)
-          );
-        })
-      : filteredEntries;
-  }, [filteredEntries, searchTerm, utilityMap]);
+    return filteredEntries.filter((row) => {
+      if (auditFilter !== 'all') {
+        const rowIssues = validationSummary.entryIssuesMap.get(row.id) || [];
+        if (auditFilter === 'exceptions') {
+          if (rowIssues.length === 0) return false;
+        } else if (auditFilter === 'zero_cost') {
+          if (
+            !rowIssues.some(
+              (iss) =>
+                iss.category === 'zero_cost' || iss.category === 'zero_consumption'
+            )
+          ) {
+            return false;
+          }
+        } else if (
+          !rowIssues.some(
+            (iss) => iss.category === (auditFilter as ValidationCategory)
+          )
+        ) {
+          return false;
+        }
+      }
+
+      if (!q) return true;
+      const uName = (
+        utilityMap.get(row.utilityId)?.name || row.utilityName
+      ).toLowerCase();
+      return (
+        row.company.toLowerCase().includes(q) ||
+        uName.includes(q) ||
+        row.date.includes(q) ||
+        row.note.toLowerCase().includes(q) ||
+        row.enteredByName.toLowerCase().includes(q)
+      );
+    });
+  }, [
+    filteredEntries,
+    searchTerm,
+    utilityMap,
+    auditFilter,
+    validationSummary.entryIssuesMap,
+  ]);
 
   const handleSortBenchmark = (key: BenchmarkSortKey) => {
     if (benchmarkSortKey === key) {
@@ -2648,15 +3182,30 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       'Utility',
       'Consumption',
       'Unit',
+      'Operating Hours (hr)',
+      'Hourly Consumption Rate (Unit/hr)',
       'Cost (BDT)',
       'Unit Cost (BDT/Unit)',
+      'Audit Status',
+      'Audit Notes',
       'Note',
       'Entered By',
     ];
     const rows = tableRows.map((r) => {
       const meta = utilityMap.get(r.utilityId);
+      const hrs = Number(r.operatingHours) || 0;
+      const hourlyRate = hrs > 0 && r.consumption > 0 ? Number((r.consumption / hrs).toFixed(4)) : 0;
       const unitCost =
         r.consumption > 0 ? Number((r.cost / r.consumption).toFixed(4)) : 0;
+      const rowIssues = validationSummary.entryIssuesMap.get(r.id) || [];
+      const auditStatus = rowIssues.some((i) => i.severity === 'critical')
+        ? 'Critical'
+        : rowIssues.some((i) => i.severity === 'warning')
+        ? 'Warning'
+        : rowIssues.length > 0
+        ? 'Info'
+        : 'OK';
+      const auditNotes = rowIssues.map((i) => i.title).join('; ');
       const escape = (v: string | number) =>
         `"${String(v).replace(/"/g, '""')}"`;
       return [
@@ -2665,8 +3214,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         escape(meta?.name || r.utilityName),
         escape(r.consumption),
         escape(meta?.unit || r.unit),
+        escape(hrs),
+        escape(hourlyRate),
         escape(r.cost),
         escape(unitCost),
+        escape(auditStatus),
+        escape(auditNotes),
         escape(r.note),
         escape(r.enteredByName),
       ].join(',');
@@ -2780,20 +3333,31 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                   ['all', 'All Time'],
                   ['custom', 'Custom'],
                 ] as [DatePreset, string][]
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setPreset(key)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-                    preset === key
-                      ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+              ).map(([key, label]) => {
+                const isSelected = preset === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setPreset(key)}
+                    className={`relative px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      isSelected
+                        ? 'text-slate-900 font-semibold'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {isSelected && (
+                      <motion.span
+                        layoutId="dashDatePresetPill"
+                        transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                        className="absolute inset-0 bg-white rounded-md shadow-sm"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span className="relative z-10">{label}</span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* Factory, Utility, Compare & Export Controls */}
@@ -3237,46 +3801,69 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.24, delay: 0.06, ease: EASE_OUT }}
-                className="bg-white border border-slate-200 rounded-xl p-5"
+                className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-slate-500">
-                    Daily Burn Rate (Avg)
-                  </span>
-                  <span className="text-[11px] font-medium text-slate-400 tabular-nums">
-                    {formatNumber(kpis.activeDaysCount, 0)}{' '}
-                    {kpis.activeDaysCount === 1 ? 'day' : 'days'}
-                  </span>
-                </div>
-                <div className="mt-2 text-2xl font-bold text-slate-900 tabular-nums">
-                  <AnimatedMetric
-                    value={kpis.dailyAvg}
-                    formatter={formatCurrency}
-                  />
-                </div>
-                <div className="mt-2 text-xs text-slate-500 tabular-nums truncate">
-                  {kpis.dailyAvgDeltaPct !== null && compareOpen ? (
-                    <span
-                      className={
-                        kpis.dailyAvgDeltaPct >= 0
-                          ? 'text-rose-700 font-medium'
-                          : 'text-emerald-700 font-medium'
-                      }
-                    >
-                      {kpis.dailyAvgDeltaPct >= 0 ? '+' : ''}
-                      {formatPercent(kpis.dailyAvgDeltaPct)} daily avg vs{' '}
-                      {comparisonStats?.bounds.label}
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-500">
+                      Daily Burn &amp; Runtime
                     </span>
-                  ) : (
-                    <>
-                      {formatNumber(kpis.activeCompaniesCount, 0)} of{' '}
-                      {formatNumber(
-                        selectedCompany === 'ALL' ? visibleCompanyNames.length : 1,
-                        0
-                      )}{' '}
-                      factories active
-                    </>
-                  )}
+                    <span className="text-[11px] font-medium text-slate-400 tabular-nums">
+                      {formatNumber(kpis.activeDaysCount, 0)}{' '}
+                      {kpis.activeDaysCount === 1 ? 'day' : 'days'}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-2xl font-bold text-slate-900 tabular-nums">
+                    <AnimatedMetric
+                      value={kpis.dailyAvg}
+                      formatter={formatCurrency}
+                    />
+                  </div>
+                  <div className="mt-1.5 text-xs text-slate-500 tabular-nums truncate">
+                    {kpis.dailyAvgDeltaPct !== null && compareOpen ? (
+                      <span
+                        className={
+                          kpis.dailyAvgDeltaPct >= 0
+                            ? 'text-rose-700 font-medium'
+                            : 'text-emerald-700 font-medium'
+                        }
+                      >
+                        {kpis.dailyAvgDeltaPct >= 0 ? '+' : ''}
+                        {formatPercent(kpis.dailyAvgDeltaPct)} daily avg vs{' '}
+                        {comparisonStats?.bounds.label}
+                      </span>
+                    ) : (
+                      <>
+                        {formatNumber(kpis.activeCompaniesCount, 0)} of{' '}
+                        {formatNumber(
+                          selectedCompany === 'ALL' ? visibleCompanyNames.length : 1,
+                          0
+                        )}{' '}
+                        factories active
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 text-xs tabular-nums">
+                  <span className="inline-flex items-center gap-1 text-slate-500">
+                    <Clock className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    Asset Run Hrs
+                  </span>
+                  <span className="font-semibold text-slate-900">
+                    {hourlyConsumptionAnalytics.totalAssetHours > 0 ? (
+                      <>
+                        {formatNumber(hourlyConsumptionAnalytics.totalAssetHours, 1)} hrs
+                        {hourlyConsumptionAnalytics.blendedCostPerHour !== null && (
+                          <span className="text-teal-800 ml-1.5">
+                            · ৳{formatNumber(hourlyConsumptionAnalytics.blendedCostPerHour, 0)}/hr
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      '0 hrs logged'
+                    )}
+                  </span>
                 </div>
               </motion.div>
 
@@ -3290,7 +3877,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                   <>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-medium text-slate-500">
-                        {singleSelectedUtil.name} · Unit Cost &amp; Range
+                        {singleSelectedUtil.name} · Unit Rate &amp; Intensity
                       </span>
                       <span className="text-[11px] font-semibold text-teal-800 tabular-nums">
                         {kpis.utilityBreakdown[0]?.avgUnitCost !== null &&
@@ -3302,6 +3889,16 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           : '—'}
                       </span>
                     </div>
+                    {kpis.utilityBreakdown[0]?.avgHourlyRate !== null &&
+                    kpis.utilityBreakdown[0]?.avgHourlyRate !== undefined && (
+                      <div className="mt-2 text-lg font-bold text-slate-900 tabular-nums">
+                        {formatNumber(kpis.utilityBreakdown[0].avgHourlyRate, 2)}{' '}
+                        {singleSelectedUtil.unit}/hr
+                        <span className="ml-2 text-xs font-normal text-slate-500">
+                          ({formatNumber(kpis.utilityBreakdown[0].hours, 1)} hrs)
+                        </span>
+                      </div>
+                    )}
                     {kpis.utilityBreakdown[0]?.highestCompany ? (
                       <div className="mt-2.5 space-y-1.5 text-xs tabular-nums">
                         <div className="flex items-center justify-between gap-2">
@@ -3420,77 +4017,140 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.24, delay: 0.14, ease: EASE_OUT }}
-                className="bg-white border border-slate-200 rounded-xl p-5"
+                className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between"
               >
-                <div className="text-xs font-medium text-slate-500">
-                  Highest-Spend Factory &amp; Peak Day
+                <div>
+                  <div className="text-xs font-medium text-slate-500">
+                    Top Factory &amp; Clean Solar Offset
+                  </div>
+                  <div className="mt-2 text-xl font-bold text-slate-900 tabular-nums truncate">
+                    {kpis.topCompany
+                      ? `${kpis.topCompany.name} · ${formatCompactCurrency(
+                          kpis.topCompany.cost
+                        )}`
+                      : '—'}
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500 tabular-nums truncate">
+                    {kpis.topCompany
+                      ? `${formatPercent(kpis.topCompany.sharePct)} of total`
+                      : 'No factory data'}
+                    {kpis.peakDay
+                      ? ` · Peak ${formatShortDate(kpis.peakDay.date)}: ${formatCompactCurrency(
+                          kpis.peakDay.cost
+                        )}`
+                      : ''}
+                  </div>
                 </div>
-                <div className="mt-2 text-xl font-bold text-slate-900 tabular-nums truncate">
-                  {kpis.topCompany
-                    ? `${kpis.topCompany.name} · ${formatCompactCurrency(
-                        kpis.topCompany.cost
-                      )}`
-                    : '—'}
-                </div>
-                <div className="mt-2 text-xs text-slate-500 tabular-nums truncate">
-                  {kpis.topCompany
-                    ? `${formatPercent(kpis.topCompany.sharePct)} of total`
-                    : 'No factory data'}
-                  {kpis.peakDay
-                    ? ` · Peak ${formatShortDate(kpis.peakDay.date)}: ${formatCompactCurrency(
-                        kpis.peakDay.cost
-                      )}`
-                    : ''}
+
+                <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 text-xs tabular-nums">
+                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                    <Sun className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                    Solar Saved
+                  </span>
+                  <span className="font-semibold text-emerald-800">
+                    {generationAnalytics.totalSolarKwh > 0 ? (
+                      <>
+                        {formatCurrency(generationAnalytics.totalSolarSavings)}
+                        <span className="text-slate-500 font-normal ml-1">
+                          ({formatPercent(generationAnalytics.solarSharePct)} power)
+                        </span>
+                      </>
+                    ) : (
+                      '0 kWh solar'
+                    )}
+                  </span>
                 </div>
               </motion.div>
             </div>
 
-            {/* Executive Insights Strip */}
-            {managementInsights.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.25, delay: 0.15 }}
-                className="bg-white border border-slate-200 rounded-xl px-5 py-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
-              >
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
-                  {managementInsights.map((ins, idx) => (
-                    <div key={ins.id} className="flex items-center gap-2">
-                      {idx > 0 && (
-                        <span
-                          className="hidden sm:inline text-slate-300 mr-2"
-                          aria-hidden="true"
-                        >
-                          |
-                        </span>
-                      )}
-                      <span
-                        className={
-                          ins.tone === 'alert'
-                            ? 'text-rose-700 font-medium'
-                            : ins.tone === 'warning'
-                            ? 'text-amber-700 font-medium'
-                            : ins.tone === 'positive'
-                            ? 'text-emerald-700 font-medium'
-                            : 'text-slate-700'
-                        }
-                      >
-                        {ins.text}
-                      </span>
-                      {ins.actionLabel && ins.onAction && (
-                        <button
-                          type="button"
-                          onClick={ins.onAction}
-                          className="text-teal-700 font-semibold hover:underline whitespace-nowrap cursor-pointer"
-                        >
-                          {ins.actionLabel}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            )}
+            {/* Executive Validation & Management Insights Strip */}
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.22, delay: 0.14, ease: EASE_OUT }}
+              className="bg-white border border-slate-200 rounded-xl px-5 py-3.5 flex flex-col xl:flex-row xl:items-center justify-between gap-3"
+            >
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-slate-900 tabular-nums">
+                  {validationSummary.criticalCount > 0 ? (
+                    <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+                  ) : validationSummary.issues.length > 0 ? (
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0" />
+                  )}
+                  Data Quality: {formatNumber(validationSummary.healthScorePct, 0)}%
+                </span>
+                <span className="text-slate-300" aria-hidden="true">·</span>
+                <span className="text-slate-600 tabular-nums">
+                  Coverage:{' '}
+                  <strong className="text-slate-900">
+                    {formatPercent(validationSummary.coveragePct)}
+                  </strong>{' '}
+                  ({formatNumber(validationSummary.loggedFactoryDays, 0)}/
+                  {formatNumber(validationSummary.expectedFactoryDays, 0)} factory-days)
+                </span>
+                <span className="text-slate-300" aria-hidden="true">·</span>
+                <span className="text-slate-600 tabular-nums">
+                  Run Hrs Logged:{' '}
+                  <strong className="text-slate-900">
+                    {formatPercent(validationSummary.hoursCompletenessPct)}
+                  </strong>
+                </span>
+                {validationSummary.issues.length > 0 ? (
+                  <>
+                    <span className="text-slate-300" aria-hidden="true">·</span>
+                    <span className="text-amber-800 font-medium tabular-nums">
+                      {formatNumber(validationSummary.issues.length, 0)} validation{' '}
+                      {validationSummary.issues.length === 1 ? 'flag' : 'flags'}
+                      {validationSummary.rateOutlierCount > 0
+                        ? ` (${validationSummary.rateOutlierCount} rate variance)`
+                        : ''}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-slate-300" aria-hidden="true">·</span>
+                    <span className="text-emerald-700 font-medium">
+                      All readings verified within normal baseline
+                    </span>
+                  </>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs shrink-0">
+                {managementInsights.slice(0, 1).map((ins) => (
+                  <span
+                    key={ins.id}
+                    className={
+                      ins.tone === 'alert'
+                        ? 'text-rose-700 font-medium'
+                        : ins.tone === 'warning'
+                        ? 'text-amber-700 font-medium'
+                        : ins.tone === 'positive'
+                        ? 'text-emerald-700 font-medium'
+                        : 'text-slate-600'
+                    }
+                  >
+                    {ins.text}
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuditFilter(
+                      validationSummary.issues.length > 0 ? 'exceptions' : 'all'
+                    );
+                    setDashboardView('audit');
+                  }}
+                  className="text-teal-700 font-semibold hover:underline whitespace-nowrap cursor-pointer"
+                >
+                  {validationSummary.issues.length > 0
+                    ? `Audit ${validationSummary.issues.length} Flags →`
+                    : 'Open Audit Ledger →'}
+                </button>
+              </div>
+            </motion.div>
 
             {/* Interactive Period Comparison Spotlight (when Compare is active) */}
             <AnimatePresence initial={false}>
@@ -3515,53 +4175,69 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
 
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                        <button
-                          type="button"
-                          onClick={() => setCompareChartTab('factory')}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            compareChartTab === 'factory'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          By Factory
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setCompareChartTab('utility')}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            compareChartTab === 'utility'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          By Utility
-                        </button>
+                        {(
+                          [
+                            ['factory', 'By Factory'],
+                            ['utility', 'By Utility'],
+                          ] as const
+                        ).map(([tabKey, label]) => {
+                          const isSelected = compareChartTab === tabKey;
+                          return (
+                            <button
+                              key={tabKey}
+                              type="button"
+                              onClick={() => setCompareChartTab(tabKey)}
+                              className={`relative px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap transition-colors ${
+                                isSelected
+                                  ? 'text-slate-900 font-semibold'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {isSelected && (
+                                <motion.span
+                                  layoutId="dashCompareTabPill"
+                                  transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                                  className="absolute inset-0 bg-white rounded-md shadow-sm"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="relative z-10">{label}</span>
+                            </button>
+                          );
+                        })}
                       </div>
 
                       <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                        <button
-                          type="button"
-                          onClick={() => setCompareMetric('total')}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            compareMetric === 'total'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          Total Spend
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setCompareMetric('dailyAvg')}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            compareMetric === 'dailyAvg'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          Daily Avg
-                        </button>
+                        {(
+                          [
+                            ['total', 'Total Spend'],
+                            ['dailyAvg', 'Daily Avg'],
+                          ] as const
+                        ).map(([metricKey, label]) => {
+                          const isSelected = compareMetric === metricKey;
+                          return (
+                            <button
+                              key={metricKey}
+                              type="button"
+                              onClick={() => setCompareMetric(metricKey)}
+                              className={`relative px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap transition-colors ${
+                                isSelected
+                                  ? 'text-slate-900 font-semibold'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {isSelected && (
+                                <motion.span
+                                  layoutId="dashCompareMetricPill"
+                                  transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                                  className="absolute inset-0 bg-white rounded-md shadow-sm"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="relative z-10">{label}</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
@@ -3664,14 +4340,25 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                   </div>
 
                   {/* Side-by-Side Comparison BarChart */}
-                  {compareChartData.length > 0 && (
+                  {compareChartData.length === 0 ||
+                  compareChartData.every((r) => r.current === 0 && r.previous === 0) ? (
+                    <div className="py-8 text-center text-xs text-slate-500 border border-dashed border-slate-200 rounded-lg">
+                      No spend recorded in either comparison window for the active filter.
+                    </div>
+                  ) : (
                     <div className="max-h-[420px] overflow-y-auto pr-1">
                       <div style={{ height: compareChartHeight }} className="w-full">
                         <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                           <BarChart
                             data={compareChartData}
                             layout={compareChartData.length > 6 ? 'vertical' : 'horizontal'}
-                            margin={{ top: 8, right: 20, left: 8, bottom: 4 }}
+                            barCategoryGap="20%"
+                            margin={{
+                              top: 8,
+                              right: 20,
+                              left: 8,
+                              bottom: compareChartData.length <= 6 && compareChartData.length > 3 ? 22 : 4,
+                            }}
                           >
                             <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                             {compareChartData.length > 6 ? (
@@ -3686,7 +4373,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                 <YAxis
                                   type="category"
                                   dataKey="name"
-                                  width={130}
+                                  width={136}
+                                  tickFormatter={(v) =>
+                                    String(v).length > 18
+                                      ? `${String(v).slice(0, 17)}…`
+                                      : String(v)
+                                  }
                                   tick={{ fontSize: 12, fill: '#0F172A' }}
                                 />
                               </>
@@ -3694,7 +4386,16 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               <>
                                 <XAxis
                                   dataKey="name"
-                                  tick={{ fontSize: 12, fill: '#334155' }}
+                                  interval={0}
+                                  angle={compareChartData.length > 3 ? -16 : 0}
+                                  textAnchor={compareChartData.length > 3 ? 'end' : 'middle'}
+                                  height={compareChartData.length > 3 ? 46 : 28}
+                                  tickFormatter={(v) =>
+                                    String(v).length > 16
+                                      ? `${String(v).slice(0, 15)}…`
+                                      : String(v)
+                                  }
+                                  tick={{ fontSize: 11, fill: '#334155' }}
                                 />
                                 <YAxis
                                   tickFormatter={(v) =>
@@ -3763,6 +4464,19 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               dataKey="current"
                               name={`Current (${dateBounds.label})`}
                               fill="#0F766E"
+                              maxBarSize={30}
+                              minPointSize={2}
+                              className={compareChartTab === 'factory' ? 'cursor-pointer' : undefined}
+                              onClick={(data) => {
+                                if (compareChartTab !== 'factory') return;
+                                const d = data as { payload?: { name?: string }; name?: string };
+                                const name = d?.payload?.name ?? d?.name;
+                                if (name) {
+                                  setSelectedCompany((prev) =>
+                                    prev === name ? 'ALL' : name
+                                  );
+                                }
+                              }}
                               radius={
                                 compareChartData.length > 6
                                   ? [0, 3, 3, 0]
@@ -3774,6 +4488,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               dataKey="previous"
                               name={`Compare (${comparisonStats.bounds.label})`}
                               fill="#94A3B8"
+                              maxBarSize={30}
+                              minPointSize={2}
                               radius={
                                 compareChartData.length > 6
                                   ? [0, 3, 3, 0]
@@ -3790,13 +4506,68 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
               )}
             </AnimatePresence>
 
-            {/* Utility Performance & Unit Cost Matrix */}
+            {/* Curated Workspace View Navigation */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
+              <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-xl">
+                {(
+                  [
+                    { id: 'overview', label: 'Executive Overview' },
+                    { id: 'hourly', label: 'Runtime & Hourly Intensity' },
+                    ...(canViewPlantGeneration
+                      ? [{ id: 'generation' as const, label: 'Plant Generation & Mix' }]
+                      : []),
+                    {
+                      id: 'audit',
+                      label:
+                        validationSummary.issues.length > 0
+                          ? `Data Quality & Ledger (${validationSummary.issues.length})`
+                          : 'Data Quality & Ledger',
+                    },
+                  ] as Array<{ id: DashboardViewTab; label: string }>
+                ).map((tab) => {
+                  const isActive = dashboardView === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setDashboardView(tab.id)}
+                      className={`relative px-3.5 py-2 text-xs sm:text-sm font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                        isActive
+                          ? 'text-slate-900 font-semibold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {isActive && (
+                        <motion.span
+                          layoutId="dashWorkspaceTab"
+                          transition={{ type: 'spring', stiffness: 450, damping: 35 }}
+                          className="absolute inset-0 bg-white rounded-lg shadow-sm border border-slate-200/70"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="relative z-10">{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="text-xs text-slate-500 tabular-nums">
+                Showing <strong className="text-slate-800">{dateBounds.label}</strong>
+                {selectedCompany !== 'ALL' && ` · ${selectedCompany}`}
+                {singleSelectedUtil && ` · ${singleSelectedUtil.name}`}
+              </div>
+            </div>
+
+            {dashboardView === 'overview' && (
             <motion.div
-              initial={{ opacity: 0, y: 10 }}
+              key="view-overview"
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25, delay: 0.16, ease: EASE_OUT }}
-              className="bg-white border border-slate-200 rounded-xl p-5"
+              transition={{ duration: 0.2, ease: EASE_OUT }}
+              className="space-y-6"
             >
+            {/* Utility Performance & Unit Cost Matrix */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3.5">
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">
@@ -3817,7 +4588,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                 )}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border border-slate-200 rounded-xl overflow-hidden divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
                 {kpis.utilityBreakdown.map((u) => {
                   const isSelected = selectedUtilityId === u.id;
                   const prevUtilCost = comparisonStats?.byUtility.get(u.id)?.cost ?? null;
@@ -3827,20 +4598,18 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                       : null;
 
                   return (
-                    <motion.button
+                    <button
                       key={u.id}
                       type="button"
-                      whileHover={{ y: -2 }}
-                      transition={{ duration: 0.16, ease: EASE_OUT }}
                       onClick={() =>
                         setSelectedUtilityId((prev) =>
                           prev === u.id ? 'ALL' : u.id
                         )
                       }
-                      className={`text-left p-4 rounded-xl border transition-colors cursor-pointer space-y-2.5 ${
+                      className={`text-left p-4 transition-colors cursor-pointer space-y-2.5 ${
                         isSelected
-                          ? 'bg-teal-50/70 border-teal-400 ring-1 ring-teal-400'
-                          : 'bg-slate-50/70 border-slate-200/90 hover:bg-slate-100/70'
+                          ? 'bg-teal-50/80'
+                          : 'bg-white hover:bg-slate-50/90'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
@@ -3859,12 +4628,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                       </div>
 
                       <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all duration-500"
-                          style={{
-                            width: `${Math.min(100, Math.max(0, u.sharePct))}%`,
-                            backgroundColor: u.color,
-                          }}
+                        <motion.div
+                          initial={{ scaleX: 0 }}
+                          animate={{ scaleX: Math.min(1, Math.max(0, u.sharePct / 100)) }}
+                          transition={{ duration: 0.45, ease: EASE_OUT }}
+                          className="h-full w-full rounded-full origin-left"
+                          style={{ backgroundColor: u.color }}
                         />
                       </div>
 
@@ -3879,7 +4648,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                         </span>
                       </div>
 
-                      <div className="pt-2 border-t border-slate-200/80 flex items-center justify-between gap-2 text-xs">
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
                         <span className="text-slate-500">
                           {u.unit ? 'Avg Rate' : 'Type'}
                         </span>
@@ -3891,6 +4660,20 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             : 'Plant Fuel'}
                         </span>
                       </div>
+
+                      {u.hours > 0 && (
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-700 tabular-nums">
+                          <span className="inline-flex items-center gap-1 text-slate-500">
+                            <Clock className="w-3 h-3 text-teal-700" />
+                            {formatNumber(u.hours, 1)} Run Hrs
+                          </span>
+                          <span className="font-semibold text-slate-900">
+                            {u.avgHourlyRate !== null
+                              ? `${formatNumber(u.avgHourlyRate, 2)} ${u.unit}/hr`
+                              : '—'}
+                          </span>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 tabular-nums">
                         {u.minUnitCost !== null && u.maxUnitCost !== null ? (
@@ -3916,20 +4699,314 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           </span>
                         )}
                       </div>
-                    </motion.button>
+                    </button>
                   );
                 })}
               </div>
+            </div>
             </motion.div>
+            )}
 
-            {/* Charts Grid */}
-            {kpis.recordCount === 0 && kpis.totalCost === 0 ? (
-              <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-sm text-slate-500">
-                No records match the selected filters. Try adjusting the date
-                range, factory, or utility filter.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Operating Hours & Hourly Consumption Intensity (কতক্ষন সময়ে কত কনজাম্পশন) */}
+            {dashboardView === 'hourly' && (
+              <motion.div
+                key="view-hourly"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
+                className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 space-y-5"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 inline-flex items-center gap-2">
+                      <Gauge className="w-4 h-4 text-teal-700 shrink-0" />
+                      Operating Hours &amp; Hourly Consumption Rate
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Run-time utilization and consumption intensity per operating hour (unit/hr, kg/hr, Avg kW, and ৳/hr burn rate)
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 tabular-nums">
+                    <span>
+                      Utility Hrs:{' '}
+                      <strong className="text-slate-900">
+                        {formatNumber(hourlyConsumptionAnalytics.totalUtilityHours, 1)}h
+                      </strong>
+                    </span>
+                    <span className="text-slate-300" aria-hidden="true">·</span>
+                    <span>
+                      Equipment Hrs:{' '}
+                      <strong className="text-slate-900">
+                        {formatNumber(hourlyConsumptionAnalytics.totalPlantEquipmentHours, 1)}h
+                      </strong>
+                    </span>
+                    {hourlyConsumptionAnalytics.blendedCostPerHour !== null && (
+                      <>
+                        <span className="text-slate-300" aria-hidden="true">·</span>
+                        <span className="text-teal-800 font-semibold">
+                          Blended Burn: ৳{formatNumber(hourlyConsumptionAnalytics.blendedCostPerHour, 0)}/hr
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Flattened Summary Metric Strip */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border border-slate-200 rounded-xl overflow-hidden divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                  <div className="p-4 bg-white space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>Total Asset Run Hours</span>
+                      <Clock className="w-3.5 h-3.5 text-teal-700" />
+                    </div>
+                    <div className="text-xl font-bold text-slate-900 tabular-nums">
+                      {formatNumber(hourlyConsumptionAnalytics.totalAssetHours, 1)} hrs
+                    </div>
+                    <div className="text-[11px] text-slate-500 tabular-nums">
+                      {hourlyConsumptionAnalytics.blendedCostPerHour !== null
+                        ? `Avg ৳${formatNumber(hourlyConsumptionAnalytics.blendedCostPerHour, 2)} per asset-hr`
+                        : 'Log Run Hrs in Daily Entry to track rate/hr'}
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-white space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>Boiler Steam Intensity</span>
+                      <Flame className="w-3.5 h-3.5 text-orange-600" />
+                    </div>
+                    <div className="text-xl font-bold text-slate-900 tabular-nums">
+                      {generationAnalytics.avgSteamPerHour !== null
+                        ? `${formatNumber(generationAnalytics.avgSteamPerHour, 1)} kg/hr`
+                        : '—'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 tabular-nums">
+                      {generationAnalytics.totalBoilerHours > 0
+                        ? `${formatNumber(generationAnalytics.totalBoilerHours, 1)} boiler run hrs`
+                        : 'No boiler run hrs logged'}
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-white space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>Captive Generator Load</span>
+                      <Activity className="w-3.5 h-3.5 text-amber-600" />
+                    </div>
+                    <div className="text-xl font-bold text-slate-900 tabular-nums">
+                      {generationAnalytics.avgGenKw !== null
+                        ? `${formatNumber(generationAnalytics.avgGenKw, 1)} kW`
+                        : '—'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 tabular-nums">
+                      {generationAnalytics.totalGenHours > 0
+                        ? `${formatNumber(generationAnalytics.totalGenHours, 1)} gen run hrs`
+                        : 'No generator run hrs logged'}
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-emerald-50/40 space-y-1">
+                    <div className="flex items-center justify-between text-xs text-emerald-900">
+                      <span>Grid &amp; Solar Avg Load</span>
+                      <Sun className="w-3.5 h-3.5 text-emerald-700" />
+                    </div>
+                    <div className="text-xl font-bold text-emerald-950 tabular-nums">
+                      {generationAnalytics.avgGridKw !== null || generationAnalytics.avgSolarKw !== null
+                        ? [
+                            generationAnalytics.avgGridKw !== null
+                              ? `Grid ${formatNumber(generationAnalytics.avgGridKw, 1)} kW`
+                              : null,
+                            generationAnalytics.avgSolarKw !== null
+                              ? `Solar ${formatNumber(generationAnalytics.avgSolarKw, 1)} kW`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : '—'}
+                    </div>
+                    <div className="text-[11px] text-emerald-800 tabular-nums">
+                      {generationAnalytics.totalGridHours > 0 || generationAnalytics.totalSolarHours > 0
+                        ? `Grid ${formatNumber(generationAnalytics.totalGridHours, 1)}h · Solar ${formatNumber(generationAnalytics.totalSolarHours, 1)}h`
+                        : 'Log Grid / Solar hours to inspect kW load'}
+                    </div>
+                  </div>
+                </div>
+
+                {hourlyConsumptionAnalytics.rows.length === 0 ? (
+                  <div className="py-10 text-center text-sm text-slate-500">
+                    No consumption or operating hours logged for the current filters.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    {/* Run Hours Distribution Chart */}
+                    <div className="lg:col-span-5 border border-slate-200 rounded-xl p-4">
+                      <div className="mb-3">
+                        <h4 className="text-sm font-bold text-slate-900">
+                          Operating Hours by Utility &amp; Equipment
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          Total logged runtime (hrs) in selected period
+                        </p>
+                      </div>
+
+                      {hourlyConsumptionAnalytics.chartRows.length === 0 ? (
+                        <div className="h-56 flex items-center justify-center text-xs text-slate-500 text-center px-4">
+                          Enter Run Hours on Daily Data Entry to visualize hourly runtime and load intensity.
+                        </div>
+                      ) : (
+                        <div
+                          className="w-full"
+                          style={{
+                            height: Math.max(
+                              220,
+                              hourlyConsumptionAnalytics.chartRows.length * 36 + 32
+                            ),
+                          }}
+                        >
+                          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                            <BarChart
+                              data={hourlyConsumptionAnalytics.chartRows}
+                              layout="vertical"
+                              barCategoryGap="20%"
+                              margin={{ top: 4, right: 20, left: 6, bottom: 4 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                              <XAxis
+                                type="number"
+                                tickFormatter={(v) => `${formatNumber(Number(v), 0)}h`}
+                                tick={{ fontSize: 11, fill: '#475569' }}
+                              />
+                              <YAxis
+                                type="category"
+                                dataKey="name"
+                                width={138}
+                                tickFormatter={(v) =>
+                                  String(v).length > 18
+                                    ? `${String(v).slice(0, 17)}…`
+                                    : String(v)
+                                }
+                                tick={{ fontSize: 11, fill: '#0F172A' }}
+                              />
+                              <Tooltip
+                                content={({ active, payload }) => {
+                                  if (!active || !payload?.length) return null;
+                                  const row = payload[0].payload as (typeof hourlyConsumptionAnalytics.rows)[number];
+                                  return (
+                                    <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs space-y-1">
+                                      <div className="font-bold text-slate-900">
+                                        {row.name} ({row.category})
+                                      </div>
+                                      <div className="text-slate-700 tabular-nums">
+                                        Run Time:{' '}
+                                        <strong>{formatNumber(row.hours, 1)} hrs</strong>
+                                      </div>
+                                      <div className="text-slate-700 tabular-nums">
+                                        Output/Usage:{' '}
+                                        <strong>
+                                          {formatNumber(row.quantity)} {row.unit}
+                                        </strong>
+                                      </div>
+                                      <div className="text-teal-800 font-semibold tabular-nums">
+                                        Hourly Rate: {row.hourlyRateLabel}
+                                      </div>
+                                    </div>
+                                  );
+                                }}
+                              />
+                              <Bar
+                                dataKey="hours"
+                                name="Run Hours"
+                                maxBarSize={26}
+                                minPointSize={3}
+                                radius={[0, 4, 4, 0]}
+                                animationDuration={450}
+                              >
+                                {hourlyConsumptionAnalytics.chartRows.map((entry) => (
+                                  <Cell key={entry.id} fill={entry.color} />
+                                ))}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Hourly Consumption Intensity Ledger */}
+                    <div className="lg:col-span-7 border border-slate-200 rounded-xl overflow-hidden">
+                      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                        <span className="text-sm font-bold text-slate-900">
+                          Asset &amp; Utility Hourly Intensity Ledger
+                        </span>
+                        <span className="text-xs text-slate-500 tabular-nums">
+                          {formatNumber(hourlyConsumptionAnalytics.rows.length, 0)} meters / units
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto max-h-[340px]">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50/70 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wide sticky top-0">
+                              <th className="py-2.5 px-4">Asset / Utility</th>
+                              <th className="py-2.5 px-4 text-right">Total Output / Usage</th>
+                              <th className="py-2.5 px-4 text-right">Run Hrs</th>
+                              <th className="py-2.5 px-4 text-right">Hourly Rate</th>
+                              <th className="py-2.5 px-4 text-right">Spend / Hr</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-xs sm:text-sm">
+                            {hourlyConsumptionAnalytics.rows.map((r) => (
+                              <tr key={r.id} className="hover:bg-slate-50/70">
+                                <td className="py-2.5 px-4 whitespace-nowrap">
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className="w-2.5 h-2.5 rounded-sm shrink-0"
+                                      style={{ backgroundColor: r.color }}
+                                    />
+                                    <span className="font-semibold text-slate-900">
+                                      {r.name}
+                                    </span>
+                                    <span className="text-[11px] text-slate-400">
+                                      · {r.category}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-4 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                                  {formatNumber(r.quantity)} {r.unit}
+                                </td>
+                                <td className="py-2.5 px-4 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                                  {r.hours > 0 ? `${formatNumber(r.hours, 1)} hr` : '—'}
+                                </td>
+                                <td className="py-2.5 px-4 text-right tabular-nums font-bold text-teal-800 whitespace-nowrap">
+                                  {r.hourlyRateLabel}
+                                </td>
+                                <td className="py-2.5 px-4 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                                  {r.costPerHour !== null
+                                    ? `৳ ${formatNumber(r.costPerHour, 1)}/hr`
+                                    : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            )}
+
+            {/* Charts Grid (Executive Overview) */}
+            {dashboardView === 'overview' && (
+              <motion.div
+                key="view-overview-charts"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.2, delay: 0.04, ease: EASE_OUT }}
+              >
+                {kpis.recordCount === 0 && kpis.totalCost === 0 ? (
+                  <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-sm text-slate-500">
+                    No records match the selected filters. Try adjusting the date
+                    range, factory, or utility filter.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Chart 1: Daily / Monthly Cost Trend */}
                 <div className="lg:col-span-8 bg-white border border-slate-200 rounded-xl p-5 sm:p-6">
                   <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
@@ -3951,31 +5028,44 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                     </div>
 
                     <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setTrendGranularity('daily')}
-                        className={`px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                          trendGranularity === 'daily'
-                            ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Daily
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTrendGranularity('monthly')}
-                        className={`px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                          trendGranularity === 'monthly'
-                            ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Monthly
-                      </button>
+                      {(
+                        [
+                          ['daily', 'Daily'],
+                          ['monthly', 'Monthly'],
+                        ] as const
+                      ).map(([gKey, label]) => {
+                        const isSelected = trendGranularity === gKey;
+                        return (
+                          <button
+                            key={gKey}
+                            type="button"
+                            onClick={() => setTrendGranularity(gKey)}
+                            className={`relative px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap transition-colors ${
+                              isSelected
+                                ? 'text-slate-900 font-semibold'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            {isSelected && (
+                              <motion.span
+                                layoutId="dashTrendGranularityPill"
+                                transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                                className="absolute inset-0 bg-white rounded-md shadow-sm"
+                                aria-hidden="true"
+                              />
+                            )}
+                            <span className="relative z-10">{label}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
 
+                  {trendData.length === 0 ? (
+                    <div className="h-80 flex items-center justify-center text-sm text-slate-500 border border-dashed border-slate-200 rounded-lg">
+                      No daily or monthly spend points in the selected date range.
+                    </div>
+                  ) : (
                   <div className="h-80 w-full">
                     <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                       {singleSelectedUtil ? (
@@ -3986,6 +5076,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                           <XAxis
                             dataKey="label"
+                            minTickGap={18}
                             tick={{ fontSize: 12, fill: '#475569' }}
                           />
                           <YAxis
@@ -4075,11 +5166,13 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                       ) : (
                         <BarChart
                           data={trendData}
+                          barCategoryGap="20%"
                           margin={{ top: 10, right: 12, left: 4, bottom: 4 }}
                         >
                           <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                           <XAxis
                             dataKey="label"
+                            minTickGap={18}
                             tick={{ fontSize: 12, fill: '#475569' }}
                           />
                           <YAxis
@@ -4143,14 +5236,19 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             }}
                           />
                           <Legend />
-                          {activeUtilities.map((u) => (
+                          {activeUtilities.map((u, idx) => (
                             <Bar
                               key={u.id}
                               dataKey={`cost_${u.id}`}
                               name={u.name}
                               stackId="a"
                               fill={u.color}
-                              radius={[2, 2, 0, 0]}
+                              maxBarSize={36}
+                              radius={
+                                idx === activeUtilities.length - 1
+                                  ? [4, 4, 0, 0]
+                                  : [0, 0, 0, 0]
+                              }
                               animationDuration={450}
                             />
                           ))}
@@ -4158,26 +5256,38 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                       )}
                     </ResponsiveContainer>
                   </div>
+                  )}
                 </div>
 
                 {/* Chart 2: Utility Cost Share Donut */}
                 <div className="lg:col-span-4 bg-white border border-slate-200 rounded-xl p-5 sm:p-6 flex flex-col">
-                  <div className="mb-3">
-                    <h3 className="text-base font-bold text-slate-900">
-                      Cost Share &amp; Rate by Utility
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Percentage share and weighted unit cost
-                    </p>
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900">
+                        Cost Share &amp; Rate by Utility
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Click a utility to filter dashboard
+                      </p>
+                    </div>
+                    {selectedUtilityId !== 'ALL' && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedUtilityId('ALL')}
+                        className="text-xs font-semibold text-teal-700 hover:underline cursor-pointer shrink-0"
+                      >
+                        All
+                      </button>
+                    )}
                   </div>
 
                   {pieData.length === 0 ? (
-                    <div className="flex-1 flex items-center justify-center text-sm text-slate-500">
+                    <div className="flex-1 min-h-[220px] flex items-center justify-center text-sm text-slate-500 border border-dashed border-slate-200 rounded-lg">
                       No cost data available
                     </div>
                   ) : (
                     <>
-                      <div className="h-52 w-full">
+                      <div className="relative h-52 w-full">
                         <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                           <PieChart>
                             <Pie
@@ -4186,13 +5296,32 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               nameKey="name"
                               cx="50%"
                               cy="50%"
-                              innerRadius={50}
-                              outerRadius={80}
+                              innerRadius={54}
+                              outerRadius={82}
                               paddingAngle={2}
                               animationDuration={500}
+                              className="cursor-pointer"
+                              onClick={(data) => {
+                                const d = data as { payload?: { id?: string }; id?: string };
+                                const uid = d?.payload?.id ?? d?.id;
+                                if (uid) {
+                                  setSelectedUtilityId((prev) =>
+                                    prev === uid ? 'ALL' : uid
+                                  );
+                                }
+                              }}
                             >
-                              {pieData.map((entry, idx) => (
-                                <Cell key={idx} fill={entry.color} />
+                              {pieData.map((entry) => (
+                                <Cell
+                                  key={entry.id}
+                                  fill={entry.color}
+                                  fillOpacity={
+                                    selectedUtilityId === 'ALL' ||
+                                    selectedUtilityId === entry.id
+                                      ? 1
+                                      : 0.35
+                                  }
+                                />
                               ))}
                             </Pie>
                             <Tooltip
@@ -4200,40 +5329,69 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             />
                           </PieChart>
                         </ResponsiveContainer>
+                        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center px-4">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                            Total Spend
+                          </span>
+                          <span className="text-sm font-bold text-slate-900 tabular-nums mt-0.5">
+                            {formatCompactCurrency(kpis.totalCost)}
+                          </span>
+                        </div>
                       </div>
 
-                      <div className="mt-3 space-y-2.5 border-t border-slate-100 pt-3">
+                      <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
                         {pieData.map((item) => {
                           const pct =
                             kpis.totalCost > 0
                               ? (item.value / kpis.totalCost) * 100
                               : 0;
+                          const isUtilSelected = selectedUtilityId === item.id;
                           return (
-                            <div
-                              key={item.name}
-                              className="flex items-center justify-between text-xs gap-2"
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedUtilityId((prev) =>
+                                  prev === item.id ? 'ALL' : item.id
+                                )
+                              }
+                              className={`w-full text-left rounded-lg px-2 py-1.5 transition-colors cursor-pointer space-y-1 ${
+                                isUtilSelected
+                                  ? 'bg-teal-50/80'
+                                  : 'hover:bg-slate-50'
+                              }`}
                             >
-                              <div className="flex items-center gap-2 text-slate-700 min-w-0">
-                                <span
-                                  className="w-2.5 h-2.5 rounded-sm shrink-0"
+                              <div className="flex items-center justify-between text-xs gap-2">
+                                <div className="flex items-center gap-2 text-slate-700 min-w-0">
+                                  <span
+                                    className="w-2.5 h-2.5 rounded-sm shrink-0"
+                                    style={{ backgroundColor: item.color }}
+                                  />
+                                  <span className="font-medium truncate">
+                                    {item.name}
+                                  </span>
+                                </div>
+                                <div className="tabular-nums text-right shrink-0">
+                                  <span className="text-slate-900 font-semibold">
+                                    {formatCurrency(item.value)} · {formatPercent(pct)}
+                                  </span>
+                                  {item.avgUnitCost !== null && item.unit && (
+                                    <span className="block text-[11px] text-teal-700">
+                                      ৳ {formatNumber(item.avgUnitCost, 2)}/{item.unit}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                                <motion.div
+                                  initial={{ scaleX: 0 }}
+                                  animate={{ scaleX: Math.min(1, Math.max(0, pct / 100)) }}
+                                  transition={{ duration: 0.4, ease: EASE_OUT }}
+                                  className="h-full w-full rounded-full origin-left"
                                   style={{ backgroundColor: item.color }}
                                 />
-                                <span className="font-medium truncate">
-                                  {item.name}
-                                </span>
                               </div>
-                              <div className="tabular-nums text-right shrink-0">
-                                <div className="text-slate-900 font-semibold">
-                                  {formatCurrency(item.value)} · {formatPercent(pct)}
-                                </div>
-                                {item.avgUnitCost !== null && (
-                                  <div className="text-[11px] text-teal-700">
-                                    ৳ {formatNumber(item.avgUnitCost, 2)}/
-                                    {item.unit}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
@@ -4276,7 +5434,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                   </div>
 
                   {!activeUnitTrendUtil || unitTrendPoints.length === 0 ? (
-                    <div className="h-64 flex items-center justify-center text-sm text-slate-500">
+                    <div className="h-64 flex items-center justify-center text-sm text-slate-500 border border-dashed border-slate-200 rounded-lg">
                       No consumption readings available to compute unit cost.
                     </div>
                   ) : (
@@ -4289,13 +5447,14 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                           <XAxis
                             dataKey="label"
+                            minTickGap={18}
                             tick={{ fontSize: 11, fill: '#475569' }}
                           />
                           <YAxis
                             tickFormatter={(v) => `৳${formatNumber(Number(v), 2)}`}
                             tick={{ fontSize: 11, fill: '#475569' }}
-                            width={60}
-                            domain={['auto', 'auto']}
+                            width={62}
+                            domain={unitTrendDomain}
                           />
                           <Tooltip
                             content={({ active, payload }) => {
@@ -4392,62 +5551,93 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
                         Ranked by total cost · Click any factory bar to drill down
+                        {selectedCompany !== 'ALL' ? ` · Active: ${selectedCompany}` : ''}
                       </p>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
+                      {selectedCompany !== 'ALL' && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCompany('ALL')}
+                          className="text-xs font-semibold text-teal-700 hover:underline cursor-pointer mr-1"
+                        >
+                          All Factories
+                        </button>
+                      )}
                       <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                        <button
-                          type="button"
-                          onClick={() => setFactoryStackMode('stacked')}
-                          className={`px-2 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            factoryStackMode === 'stacked'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          By Utility
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setFactoryStackMode('total')}
-                          className={`px-2 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            factoryStackMode === 'total'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          Total
-                        </button>
+                        {(
+                          [
+                            ['stacked', 'By Utility'],
+                            ['total', 'Total'],
+                          ] as const
+                        ).map(([modeKey, label]) => {
+                          const isSelected = factoryStackMode === modeKey;
+                          return (
+                            <button
+                              key={modeKey}
+                              type="button"
+                              onClick={() => setFactoryStackMode(modeKey)}
+                              className={`relative px-2 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap transition-colors ${
+                                isSelected
+                                  ? 'text-slate-900 font-semibold'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {isSelected && (
+                                <motion.span
+                                  layoutId="dashFactoryStackPill"
+                                  transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                                  className="absolute inset-0 bg-white rounded-md shadow-sm"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="relative z-10">{label}</span>
+                            </button>
+                          );
+                        })}
                       </div>
 
                       <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                        <button
-                          type="button"
-                          onClick={() => setFactoryLayout('horizontal')}
-                          className={`px-2 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            factoryLayout === 'horizontal'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          Horizontal
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setFactoryLayout('vertical')}
-                          className={`px-2 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
-                            factoryLayout === 'vertical'
-                              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          Vertical
-                        </button>
+                        {(
+                          [
+                            ['horizontal', 'Horizontal'],
+                            ['vertical', 'Vertical'],
+                          ] as const
+                        ).map(([layoutKey, label]) => {
+                          const isSelected = factoryLayout === layoutKey;
+                          return (
+                            <button
+                              key={layoutKey}
+                              type="button"
+                              onClick={() => setFactoryLayout(layoutKey)}
+                              className={`relative px-2 py-1 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap transition-colors ${
+                                isSelected
+                                  ? 'text-slate-900 font-semibold'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {isSelected && (
+                                <motion.span
+                                  layoutId="dashFactoryLayoutPill"
+                                  transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                                  className="absolute inset-0 bg-white rounded-md shadow-sm"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="relative z-10">{label}</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
 
+                  {!hasFactorySpendData ? (
+                    <div className="h-64 flex items-center justify-center text-sm text-slate-500 border border-dashed border-slate-200 rounded-lg">
+                      No factory spend recorded for the active date range and utility filter.
+                    </div>
+                  ) : (
                   <div
                     className={
                       factoryLayout === 'horizontal'
@@ -4466,8 +5656,17 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                       <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                         <BarChart
                           data={companyComparisonData}
-                          layout={factoryLayout}
-                          margin={{ top: 8, right: 16, left: 8, bottom: 4 }}
+                          layout={factoryLayout === 'horizontal' ? 'vertical' : 'horizontal'}
+                          barCategoryGap="22%"
+                          margin={{
+                            top: 8,
+                            right: 20,
+                            left: 8,
+                            bottom:
+                              factoryLayout === 'vertical' && companyComparisonData.length > 4
+                                ? 24
+                                : 4,
+                          }}
                         >
                           <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                           {factoryLayout === 'horizontal' ? (
@@ -4482,7 +5681,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               <YAxis
                                 type="category"
                                 dataKey="company"
-                                width={128}
+                                width={136}
+                                tickFormatter={(v) =>
+                                  String(v).length > 18
+                                    ? `${String(v).slice(0, 17)}…`
+                                    : String(v)
+                                }
                                 tick={{ fontSize: 12, fill: '#0F172A' }}
                               />
                             </>
@@ -4490,6 +5694,15 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             <>
                               <XAxis
                                 dataKey="company"
+                                interval={0}
+                                angle={companyComparisonData.length > 4 ? -20 : 0}
+                                textAnchor={companyComparisonData.length > 4 ? 'end' : 'middle'}
+                                height={companyComparisonData.length > 4 ? 52 : 28}
+                                tickFormatter={(v) =>
+                                  String(v).length > 15
+                                    ? `${String(v).slice(0, 14)}…`
+                                    : String(v)
+                                }
                                 tick={{ fontSize: 11, fill: '#334155' }}
                               />
                               <YAxis
@@ -4497,7 +5710,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   formatCompactCurrency(Number(v))
                                 }
                                 tick={{ fontSize: 11, fill: '#475569' }}
-                                width={60}
+                                width={64}
                               />
                             </>
                           )}
@@ -4508,16 +5721,24 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                 string,
                                 string | number
                               >;
+                              const rowTotal = Number(row.totalCost || 0);
+                              const rowSharePct =
+                                kpis.totalCost > 0
+                                  ? (rowTotal / kpis.totalCost) * 100
+                                  : 0;
                               return (
-                                <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs space-y-1.5 min-w-[220px]">
-                                  <div className="font-bold text-slate-900 pb-1 border-b border-slate-100">
-                                    {String(row.company)}
+                                <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs space-y-1.5 min-w-[230px]">
+                                  <div className="font-bold text-slate-900 pb-1 border-b border-slate-100 flex items-center justify-between gap-3">
+                                    <span>{String(row.company)}</span>
+                                    <span className="text-[11px] font-semibold text-teal-800 tabular-nums">
+                                      {formatPercent(rowSharePct)}
+                                    </span>
                                   </div>
                                   {activeUtilities.map((u) => {
                                     const c = Number(row[`cost_${u.id}`] || 0);
                                     const q = Number(row[`cons_${u.id}`] || 0);
                                     if (c === 0 && q === 0) return null;
-                                    const rate = q > 0 ? c / q : null;
+                                    const rate = q > 0 && u.unit ? c / q : null;
                                     return (
                                       <div
                                         key={u.id}
@@ -4544,7 +5765,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   <div className="pt-1 border-t border-slate-100 flex items-center justify-between font-bold text-slate-900 tabular-nums">
                                     <span>Total</span>
                                     <span>
-                                      {formatCurrency(Number(row.totalCost || 0))}
+                                      {formatCurrency(rowTotal)}
                                     </span>
                                   </div>
                                 </div>
@@ -4557,6 +5778,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               dataKey="totalCost"
                               name="Total Spend (BDT)"
                               fill="#0F766E"
+                              maxBarSize={32}
+                              minPointSize={3}
                               radius={
                                 factoryLayout === 'horizontal'
                                   ? [0, 4, 4, 0]
@@ -4564,8 +5787,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               }
                               className="cursor-pointer"
                               onClick={(data) => {
-                                const name = (data as { company?: string })
-                                  ?.company;
+                                const d = data as {
+                                  payload?: { company?: string };
+                                  company?: string;
+                                };
+                                const name = d?.payload?.company ?? d?.company;
                                 if (name) {
                                   setSelectedCompany((prev) =>
                                     prev === name ? 'ALL' : name
@@ -4573,20 +5799,42 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                 }
                               }}
                               animationDuration={450}
-                            />
+                            >
+                              {companyComparisonData.map((entry) => (
+                                <Cell
+                                  key={String(entry.company)}
+                                  fill={
+                                    selectedCompany === 'ALL' ||
+                                    selectedCompany === String(entry.company)
+                                      ? '#0F766E'
+                                      : '#CBD5E1'
+                                  }
+                                />
+                              ))}
+                            </Bar>
                           ) : (
-                            activeUtilities.map((u) => (
+                            activeUtilities.map((u, idx) => (
                               <Bar
                                 key={u.id}
                                 dataKey={`cost_${u.id}`}
                                 name={u.name}
                                 stackId="factory"
                                 fill={u.color}
-                                radius={[2, 2, 2, 2]}
+                                maxBarSize={32}
+                                radius={
+                                  idx === activeUtilities.length - 1
+                                    ? factoryLayout === 'horizontal'
+                                      ? [0, 4, 4, 0]
+                                      : [4, 4, 0, 0]
+                                    : [0, 0, 0, 0]
+                                }
                                 className="cursor-pointer"
                                 onClick={(data) => {
-                                  const name = (data as { company?: string })
-                                    ?.company;
+                                  const d = data as {
+                                    payload?: { company?: string };
+                                    company?: string;
+                                  };
+                                  const name = d?.payload?.company ?? d?.company;
                                   if (name) {
                                     setSelectedCompany((prev) =>
                                       prev === name ? 'ALL' : name
@@ -4594,26 +5842,41 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   }
                                 }}
                                 animationDuration={450}
-                              />
+                              >
+                                {companyComparisonData.map((entry) => (
+                                  <Cell
+                                    key={`${u.id}-${String(entry.company)}`}
+                                    fill={u.color}
+                                    fillOpacity={
+                                      selectedCompany === 'ALL' ||
+                                      selectedCompany === String(entry.company)
+                                        ? 1
+                                        : 0.35
+                                    }
+                                  />
+                                ))}
+                              </Bar>
                             ))
                           )}
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
                   </div>
+                  )}
                 </div>
-              </div>
+                  </div>
+                )}
+              </motion.div>
             )}
 
             {/* Plant Equipment & Generation Analytics (Boilers · Generators · Solar) */}
-            {canViewPlantGeneration &&
-              (generationAnalytics.hasRecords ||
-                profile?.role === 'admin' ||
-                profile?.role === 'entry') && (
+            {dashboardView === 'generation' &&
+              canViewPlantGeneration && (
               <motion.div
-                initial={{ opacity: 0, y: 10 }}
+                key="view-generation"
+                initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.26, delay: 0.12, ease: EASE_OUT }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
                 className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 space-y-6"
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200">
@@ -4682,9 +5945,9 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                   </div>
                 ) : (
                   <>
-                    {/* Generation KPI Cards */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="p-4 rounded-xl bg-slate-50/70 border border-slate-200/90 space-y-2">
+                    {/* Flattened Generation KPI Strip */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border border-slate-200 rounded-xl overflow-hidden divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                      <div className="p-4 bg-white space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
                             <Flame className="w-3.5 h-3.5 text-orange-600" />
@@ -4773,9 +6036,20 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             {comparisonStats?.bounds.label}
                           </div>
                         )}
+                        {(generationAnalytics.totalBoilerHours > 0 ||
+                          generationAnalytics.avgSteamPerHour !== null) && (
+                          <div className="pt-1.5 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-600 tabular-nums">
+                            <span>Run: {formatNumber(generationAnalytics.totalBoilerHours, 1)} hrs</span>
+                            <span className="font-semibold text-orange-800">
+                              {generationAnalytics.avgSteamPerHour !== null
+                                ? `${formatNumber(generationAnalytics.avgSteamPerHour, 1)} kg/hr`
+                                : '—'}
+                            </span>
+                          </div>
+                        )}
                       </div>
 
-                      <div className="p-4 rounded-xl bg-slate-50/70 border border-slate-200/90 space-y-2">
+                      <div className="p-4 bg-white space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
                             <Zap className="w-3.5 h-3.5 text-teal-700" />
@@ -4814,6 +6088,17 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               : `${formatPercent(generationAnalytics.genSharePct)} mix`}
                           </span>
                         </div>
+                        {(generationAnalytics.totalGenHours > 0 ||
+                          generationAnalytics.avgGenKw !== null) && (
+                          <div className="flex items-center justify-between text-[11px] text-slate-600 tabular-nums">
+                            <span>Run: {formatNumber(generationAnalytics.totalGenHours, 1)} hrs</span>
+                            <span className="font-semibold text-teal-800">
+                              {generationAnalytics.avgGenKw !== null
+                                ? `Avg ${formatNumber(generationAnalytics.avgGenKw, 1)} kW`
+                                : '—'}
+                            </span>
+                          </div>
+                        )}
                         {(generationAnalytics.totalDieselGenKwh > 0 ||
                           generationAnalytics.totalGasGenKwh > 0) && (
                           <div className="pt-1.5 border-t border-slate-200/60 flex flex-wrap items-center justify-between gap-1 text-[11px] text-slate-600 tabular-nums">
@@ -4883,6 +6168,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                 </span>
                                 <span className="shrink-0">
                                   {formatNumber(gu.kwh, 0)} kWh
+                                  {gu.hours > 0 && ` · ${formatNumber(gu.hours, 1)}h`}
                                   {gu.costPerKwh !== null && (
                                     <span className="text-slate-700 font-semibold">
                                       {' '}
@@ -4903,7 +6189,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                         )}
                       </div>
 
-                      <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-200/80 space-y-2">
+                      <div className="p-4 bg-emerald-50/40 space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-900">
                             <Sun className="w-3.5 h-3.5 text-amber-500" />
@@ -4925,6 +6211,17 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             {formatCurrency(generationAnalytics.totalSolarSavings)}
                           </span>
                         </div>
+                        {(generationAnalytics.totalSolarHours > 0 ||
+                          generationAnalytics.avgSolarKw !== null) && (
+                          <div className="flex items-center justify-between text-[11px] text-emerald-800 tabular-nums">
+                            <span>Sun Hrs: {formatNumber(generationAnalytics.totalSolarHours, 1)}h</span>
+                            <span className="font-semibold">
+                              {generationAnalytics.avgSolarKw !== null
+                                ? `Avg ${formatNumber(generationAnalytics.avgSolarKw, 1)} kW`
+                                : '—'}
+                            </span>
+                          </div>
+                        )}
                         {generationAnalytics.singleScopeSolarUnits.length > 1 && (
                           <div className="pt-1.5 border-t border-emerald-200/60 space-y-0.5 text-[11px] text-emerald-900 tabular-nums">
                             {generationAnalytics.singleScopeSolarUnits.map((su) => (
@@ -4955,7 +6252,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                         )}
                       </div>
 
-                      <div className="p-4 rounded-xl bg-slate-50/70 border border-slate-200/90 space-y-2.5">
+                      <div className="p-4 bg-white space-y-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-xs font-medium text-slate-600">
                             Total Plant Power Mix
@@ -5031,15 +6328,10 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           </div>
                         )}
                         {generationAnalytics.gridProviderTotals.length > 0 && (
-                          <div className="pt-1.5 border-t border-slate-200/60 flex flex-wrap gap-1.5 text-[10px] tabular-nums">
-                            {generationAnalytics.gridProviderTotals.map((gp) => (
-                              <span
-                                key={gp.provider}
-                                className="px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200/80 text-blue-900 font-medium"
-                              >
-                                {gp.provider}: {formatNumber(gp.kwh, 0)} kWh
-                              </span>
-                            ))}
+                          <div className="pt-1.5 border-t border-slate-200/60 text-[11px] text-blue-900 font-medium tabular-nums">
+                            {generationAnalytics.gridProviderTotals
+                              .map((gp) => `${gp.provider}: ${formatNumber(gp.kwh, 0)} kWh`)
+                              .join(' · ')}
                           </div>
                         )}
                       </div>
@@ -5058,20 +6350,25 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           </p>
                         </div>
 
+                        {powerMixFactoryRows.length === 0 ? (
+                          <div className="h-64 flex items-center justify-center text-xs text-slate-500 border border-dashed border-slate-200 rounded-lg">
+                            No Grid, Generator, or Solar kWh readings recorded in this period.
+                          </div>
+                        ) : (
                         <div
                           className={
-                            generationAnalytics.factoryRows.length > 5
+                            powerMixFactoryRows.length > 5
                               ? 'max-h-[340px] overflow-y-auto pr-1'
                               : 'h-64 w-full'
                           }
                         >
                           <div
                             style={
-                              generationAnalytics.factoryRows.length > 5
+                              powerMixFactoryRows.length > 5
                                 ? {
                                     height: Math.max(
                                       240,
-                                      generationAnalytics.factoryRows.length * 40 + 40
+                                      powerMixFactoryRows.length * 40 + 40
                                     ),
                                   }
                                 : { height: '100%' }
@@ -5080,16 +6377,26 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           >
                             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                               <BarChart
-                                data={generationAnalytics.factoryRows}
+                                data={powerMixFactoryRows}
                                 layout={
-                                  generationAnalytics.factoryRows.length > 5
+                                  powerMixFactoryRows.length > 5
                                     ? 'vertical'
                                     : 'horizontal'
                                 }
-                                margin={{ top: 8, right: 16, left: 6, bottom: 4 }}
+                                barCategoryGap="22%"
+                                margin={{
+                                  top: 8,
+                                  right: 16,
+                                  left: 6,
+                                  bottom:
+                                    powerMixFactoryRows.length <= 5 &&
+                                    powerMixFactoryRows.length > 3
+                                      ? 20
+                                      : 4,
+                                }}
                               >
                                 <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                                {generationAnalytics.factoryRows.length > 5 ? (
+                                {powerMixFactoryRows.length > 5 ? (
                                   <>
                                     <XAxis
                                       type="number"
@@ -5099,7 +6406,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                     <YAxis
                                       type="category"
                                       dataKey="company"
-                                      width={120}
+                                      width={128}
+                                      tickFormatter={(v) =>
+                                        String(v).length > 17
+                                          ? `${String(v).slice(0, 16)}…`
+                                          : String(v)
+                                      }
                                       tick={{ fontSize: 11, fill: '#0F172A' }}
                                     />
                                   </>
@@ -5107,6 +6419,15 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   <>
                                     <XAxis
                                       dataKey="company"
+                                      interval={0}
+                                      angle={powerMixFactoryRows.length > 3 ? -16 : 0}
+                                      textAnchor={powerMixFactoryRows.length > 3 ? 'end' : 'middle'}
+                                      height={powerMixFactoryRows.length > 3 ? 44 : 26}
+                                      tickFormatter={(v) =>
+                                        String(v).length > 15
+                                          ? `${String(v).slice(0, 14)}…`
+                                          : String(v)
+                                      }
                                       tick={{ fontSize: 11, fill: '#334155' }}
                                     />
                                     <YAxis
@@ -5117,10 +6438,40 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   </>
                                 )}
                                 <Tooltip
-                                  formatter={(v, name) => [
-                                    `${formatNumber(Number(v))} kWh`,
-                                    String(name),
-                                  ]}
+                                  content={({ active, payload }) => {
+                                    if (!active || !payload?.length) return null;
+                                    const row = payload[0].payload as {
+                                      company: string;
+                                      gridKwh: number;
+                                      generatorKwh: number;
+                                      solarKwh: number;
+                                      totalPower: number;
+                                      solarSharePct: number;
+                                    };
+                                    return (
+                                      <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs space-y-1 min-w-[200px] tabular-nums">
+                                        <div className="font-bold text-slate-900 pb-1 border-b border-slate-100">
+                                          {row.company}
+                                        </div>
+                                        <div className="flex justify-between gap-3">
+                                          <span className="text-blue-700">Grid Power</span>
+                                          <span className="font-semibold">{formatNumber(row.gridKwh, 0)} kWh</span>
+                                        </div>
+                                        <div className="flex justify-between gap-3">
+                                          <span className="text-amber-700">Generator</span>
+                                          <span className="font-semibold">{formatNumber(row.generatorKwh, 0)} kWh</span>
+                                        </div>
+                                        <div className="flex justify-between gap-3">
+                                          <span className="text-emerald-700">Clean Solar</span>
+                                          <span className="font-semibold">{formatNumber(row.solarKwh, 0)} kWh ({formatPercent(row.solarSharePct)})</span>
+                                        </div>
+                                        <div className="pt-1 border-t border-slate-100 flex justify-between font-bold text-slate-900">
+                                          <span>Total Mix</span>
+                                          <span>{formatNumber(row.totalPower, 0)} kWh</span>
+                                        </div>
+                                      </div>
+                                    );
+                                  }}
                                 />
                                 <Legend />
                                 <Bar
@@ -5128,6 +6479,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   name="Grid (kWh)"
                                   stackId="pwr"
                                   fill="#2F6FDE"
+                                  maxBarSize={32}
                                   animationDuration={450}
                                 />
                                 <Bar
@@ -5135,6 +6487,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   name="Generator (kWh)"
                                   stackId="pwr"
                                   fill="#E0A100"
+                                  maxBarSize={32}
                                   animationDuration={450}
                                 />
                                 <Bar
@@ -5142,13 +6495,19 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   name="Solar (kWh)"
                                   stackId="pwr"
                                   fill="#16A34A"
-                                  radius={[2, 2, 2, 2]}
+                                  maxBarSize={32}
+                                  radius={
+                                    powerMixFactoryRows.length > 5
+                                      ? [0, 3, 3, 0]
+                                      : [3, 3, 0, 0]
+                                  }
                                   animationDuration={450}
                                 />
                               </BarChart>
                             </ResponsiveContainer>
                           </div>
                         </div>
+                        )}
                       </div>
 
                       {/* Steam & Captive/Solar Generation Trend */}
@@ -5162,6 +6521,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                           </p>
                         </div>
 
+                        {generationAnalytics.trendPoints.length === 0 ? (
+                          <div className="h-64 flex items-center justify-center text-xs text-slate-500 border border-dashed border-slate-200 rounded-lg">
+                            No generation timeline points in the active period.
+                          </div>
+                        ) : (
                         <div className="h-64 w-full">
                           <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                             <LineChart
@@ -5171,6 +6535,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                               <XAxis
                                 dataKey="label"
+                                minTickGap={18}
                                 tick={{ fontSize: 11, fill: '#475569' }}
                               />
                               <YAxis
@@ -5227,6 +6592,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             </LineChart>
                           </ResponsiveContainer>
                         </div>
+                        )}
                       </div>
                     </div>
 
@@ -5304,6 +6670,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   {row.steamKg > 0
                                     ? `${formatNumber(row.steamKg)} kg`
                                     : '—'}
+                                  {row.steamPerHour !== null && (
+                                    <span className="block text-[11px] font-normal text-orange-700">
+                                      {formatNumber(row.steamPerHour, 1)} kg/hr · {formatNumber(row.boilerHours, 1)}h
+                                    </span>
+                                  )}
                                 </td>
                                 <td className="py-2.5 px-4 text-right tabular-nums text-xs whitespace-nowrap align-top">
                                   {row.steamCostPerKg !== null ? (
@@ -5343,6 +6714,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                             : bu.yieldPerFuel !== null
                                             ? `${formatNumber(bu.yieldPerFuel, 1)} kg/${bu.fuelUnit}`
                                             : `${formatNumber(bu.steamKg, 0)} kg`}
+                                          {bu.steamPerHour !== null &&
+                                            ` · ${formatNumber(bu.steamPerHour, 1)} kg/hr`}
                                           {bu.costPerKg !== null &&
                                             ` (৳${formatNumber(bu.costPerKg, 2)})`}
                                         </div>
@@ -5369,6 +6742,11 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                   {row.generatorKwh > 0 ? (
                                     <>
                                       {formatNumber(row.generatorKwh)} kWh
+                                      {row.genAvgKw !== null && (
+                                        <span className="block text-[11px] font-normal text-amber-700">
+                                          Avg {formatNumber(row.genAvgKw, 1)} kW · {formatNumber(row.generatorHours, 1)}h
+                                        </span>
+                                      )}
                                       {(row.dieselGenKwh > 0 || row.gasGenKwh > 0) && (
                                         <span className="block text-[11px] font-normal text-slate-500">
                                           D: {formatNumber(row.dieselGenKwh, 0)} · G:{' '}
@@ -5430,17 +6808,27 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                                             ? `${getFuelLabel(gu.fuelMode)} ${gu.fuelUnit}`
                                             : gu.fuelUnit}
                                           ): {formatNumber(gu.kwh, 0)} kWh
+                                          {gu.avgKw !== null && ` (${formatNumber(gu.avgKw, 1)} kW)`}
                                           {gu.costPerKwh !== null &&
-                                            ` (৳${formatNumber(gu.costPerKwh, 2)})`}
+                                            ` · ৳${formatNumber(gu.costPerKwh, 2)}`}
                                         </div>
                                       ))}
                                     </div>
                                   )}
                                 </td>
                                 <td className="py-2.5 px-4 text-right tabular-nums font-semibold text-emerald-700 whitespace-nowrap align-top">
-                                  {row.solarKwh > 0
-                                    ? `${formatNumber(row.solarKwh)} kWh`
-                                    : '—'}
+                                  {row.solarKwh > 0 ? (
+                                    <>
+                                      {formatNumber(row.solarKwh)} kWh
+                                      {row.solarAvgKw !== null && (
+                                        <span className="block text-[11px] font-normal text-emerald-600">
+                                          Avg {formatNumber(row.solarAvgKw, 1)} kW · {formatNumber(row.solarHours, 1)}h
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    '—'
+                                  )}
                                 </td>
                                 <td className="py-2.5 px-4 text-right tabular-nums text-xs whitespace-nowrap align-top">
                                   {row.solarSavings > 0 || row.solarKwh > 0 ? (
@@ -5467,8 +6855,9 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
               </motion.div>
             )}
 
-            {/* Factory Efficiency & Unit Cost Benchmarking Table */}
-            {(companyBenchmarkRows.length > 0 || benchmarkSearch.trim() !== '') && (
+            {/* Factory Efficiency & Unit Cost Benchmarking Table (Executive Overview) */}
+            {dashboardView === 'overview' &&
+              (companyBenchmarkRows.length > 0 || benchmarkSearch.trim() !== '') && (
               <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
                 <div className="p-5 sm:p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
@@ -5537,6 +6926,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                             className="py-3 px-4 text-right cursor-pointer hover:text-slate-900 whitespace-nowrap"
                           >
                             Active Days {renderSortIcon('activeDays')}
+                          </th>
+                          <th
+                            onClick={() => handleSortBenchmark('totalHours')}
+                            className="py-3 px-4 text-right cursor-pointer hover:text-slate-900 whitespace-nowrap"
+                          >
+                            Run Hrs {renderSortIcon('totalHours')}
                           </th>
                           <th
                             onClick={() => handleSortBenchmark('totalCost')}
@@ -5620,6 +7015,20 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                               </td>
                               <td className="py-3 px-4 text-right tabular-nums text-slate-700">
                                 {formatNumber(row.activeDays, 0)}
+                              </td>
+                              <td className="py-3 px-4 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                                {row.totalHours > 0 ? (
+                                  <>
+                                    <span>{formatNumber(row.totalHours, 1)}h</span>
+                                    {row.costPerHour !== null && (
+                                      <span className="block text-[11px] text-teal-800">
+                                        ৳{formatNumber(row.costPerHour, 0)}/hr
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  '—'
+                                )}
                               </td>
                               <td className="py-3 px-4 text-right tabular-nums font-bold text-slate-900 whitespace-nowrap">
                                 {formatCurrency(row.totalCost)}
@@ -5744,150 +7153,435 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
               </div>
             )}
 
-            {/* Detailed Ledger */}
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <div className="p-5 sm:p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">
-                    Detailed Ledger
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
-                    {formatNumber(tableRows.length, 0)} matching records
-                  </p>
-                </div>
-
-                <div className="relative w-full sm:w-72">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    placeholder="Search factory, utility, or note..."
-                    className="w-full pl-9 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-600"
-                  />
-                  {searchTerm && (
-                    <button
-                      type="button"
-                      onClick={() => setSearchTerm('')}
-                      aria-label="Clear search"
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {tableRows.length === 0 ? (
-                <div className="p-10 text-center text-sm text-slate-500">
-                  No records match your search query.
-                </div>
-              ) : (
-                <>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
-                          <th className="py-3 px-4">Date</th>
-                          <th className="py-3 px-4">Factory</th>
-                          <th className="py-3 px-4">Utility</th>
-                          <th className="py-3 px-4 text-right">Consumption</th>
-                          <th className="py-3 px-4 text-right">Cost</th>
-                          <th className="py-3 px-4 text-right">Unit Cost</th>
-                          <th className="py-3 px-4">Note</th>
-                          <th className="py-3 px-4">Entered By</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 text-sm">
-                        {tableRows.slice(0, tableLimit).map((row) => {
-                          const meta = utilityMap.get(row.utilityId);
-                          const unitLabel = meta?.unit || row.unit;
-                          const unitCost =
-                            row.consumption > 0
-                              ? row.cost / row.consumption
-                              : null;
-                          const periodAvg = utilityAvgUnitCostMap.get(
-                            row.utilityId
-                          );
-                          const isHighRate =
-                            unitCost !== null &&
-                            periodAvg !== undefined &&
-                            periodAvg > 0 &&
-                            unitCost > periodAvg * 1.15;
-
-                          return (
-                            <tr key={row.id} className="hover:bg-slate-50/70">
-                              <td className="py-2.5 px-4 whitespace-nowrap text-slate-700 tabular-nums">
-                                {formatDate(row.date)}
-                              </td>
-                              <td className="py-2.5 px-4 font-medium text-slate-900 whitespace-nowrap">
-                                {row.company}
-                              </td>
-                              <td className="py-2.5 px-4 whitespace-nowrap">
-                                <span className="inline-flex items-center gap-2 text-slate-800">
-                                  <span
-                                    className="w-2.5 h-2.5 rounded-sm shrink-0"
-                                    style={{
-                                      backgroundColor: meta?.color || '#64748B',
-                                    }}
-                                  />
-                                  {meta?.name || row.utilityName}
-                                </span>
-                              </td>
-                              <td className="py-2.5 px-4 text-right tabular-nums text-slate-800 whitespace-nowrap">
-                                {formatNumber(row.consumption)} {unitLabel}
-                              </td>
-                              <td className="py-2.5 px-4 text-right tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                                {formatCurrency(row.cost)}
-                              </td>
-                              <td
-                                className={`py-2.5 px-4 text-right tabular-nums font-medium whitespace-nowrap ${
-                                  isHighRate
-                                    ? 'text-amber-700 font-semibold'
-                                    : 'text-teal-800'
-                                }`}
-                                title={
-                                  isHighRate && periodAvg
-                                    ? `More than 15% above period avg (৳${formatNumber(
-                                        periodAvg,
-                                        2
-                                      )}/${unitLabel})`
-                                    : undefined
-                                }
-                              >
-                                {unitCost !== null
-                                  ? `৳ ${formatNumber(unitCost, 2)}/${unitLabel}`
-                                  : '—'}
-                              </td>
-                              <td className="py-2.5 px-4 text-xs text-slate-600 max-w-xs truncate">
-                                {row.note || '—'}
-                              </td>
-                              <td className="py-2.5 px-4 text-xs text-slate-500 whitespace-nowrap">
-                                {row.enteredByName}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+            {/* 15-Year Data Analyst Validation Workbench & Detailed Ledger */}
+            {dashboardView === 'audit' && (
+              <motion.div
+                key="view-audit"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
+                className="space-y-6"
+              >
+                {/* Validation Summary & Completeness Matrix */}
+                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                  <div className="p-5 sm:p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 inline-flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-teal-700 shrink-0" />
+                        Data Quality, Completeness &amp; Anomaly Validation
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Statistical baseline checks (±20% tariff drift, ±35% hourly burn variance, missing run hours, and logging coverage)
+                      </p>
+                    </div>
+                    <div className="text-xs text-slate-600 tabular-nums">
+                      Checked{' '}
+                      <strong className="text-slate-900">
+                        {formatNumber(
+                          validationSummary.totalUtilityRecords +
+                            validationSummary.totalGenerationRecords,
+                          0
+                        )}
+                      </strong>{' '}
+                      entries across{' '}
+                      <strong className="text-slate-900">
+                        {formatNumber(validationSummary.factoryCoverage.length, 0)}
+                      </strong>{' '}
+                      factories
+                    </div>
                   </div>
 
-                  {tableRows.length > tableLimit && (
-                    <div className="p-4 border-t border-slate-200 text-center">
-                      <button
-                        type="button"
-                        onClick={() => setTableLimit((prev) => prev + 25)}
-                        className="px-4 py-2 text-xs font-semibold text-teal-700 hover:bg-teal-50 rounded-lg transition-colors cursor-pointer"
-                      >
-                        Show More (
-                        {formatNumber(tableRows.length - tableLimit, 0)}{' '}
-                        remaining)
-                      </button>
+                  {/* Single-Elevation 4-Metric Validation Health Bar */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border-b border-slate-200 divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                    <div className="p-4 space-y-1">
+                      <div className="text-xs text-slate-500">Data Integrity Score</div>
+                      <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                        {formatNumber(validationSummary.healthScorePct, 0)}%
+                      </div>
+                      <div className="text-[11px] text-slate-500 tabular-nums">
+                        {validationSummary.criticalCount} critical · {validationSummary.warningCount} warnings
+                      </div>
                     </div>
+
+                    <div className="p-4 space-y-1">
+                      <div className="text-xs text-slate-500">Factory-Day Coverage</div>
+                      <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                        {formatPercent(validationSummary.coveragePct)}
+                      </div>
+                      <div className="text-[11px] text-slate-500 tabular-nums">
+                        {formatNumber(validationSummary.loggedFactoryDays, 0)} of{' '}
+                        {formatNumber(validationSummary.expectedFactoryDays, 0)} expected days
+                      </div>
+                    </div>
+
+                    <div className="p-4 space-y-1">
+                      <div className="text-xs text-slate-500">Run Hours Completeness</div>
+                      <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                        {formatPercent(validationSummary.hoursCompletenessPct)}
+                      </div>
+                      <div className="text-[11px] text-slate-500 tabular-nums">
+                        {formatNumber(validationSummary.missingHoursCount, 0)} logs missing runtime hrs
+                      </div>
+                    </div>
+
+                    <div className="p-4 space-y-1">
+                      <div className="text-xs text-slate-500">Tariff Spike Variance</div>
+                      <div className="text-2xl font-bold text-amber-800 tabular-nums">
+                        {validationSummary.estimatedRateVarianceBdt > 0
+                          ? formatCurrency(validationSummary.estimatedRateVarianceBdt)
+                          : '৳ 0.00'}
+                      </div>
+                      <div className="text-[11px] text-slate-500 tabular-nums">
+                        {formatNumber(validationSummary.rateOutlierCount, 0)} rate outliers ·{' '}
+                        {formatNumber(validationSummary.intensityOutlierCount, 0)} burn spikes
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Two-column Completeness & Exception Breakdown */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
+                    {/* Factory Completeness Table */}
+                    <div className="lg:col-span-5 overflow-x-auto max-h-[340px]">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wide sticky top-0">
+                            <th className="py-2.5 px-4">Factory</th>
+                            <th className="py-2.5 px-4 text-right">Days</th>
+                            <th className="py-2.5 px-4 text-right">Run Hrs %</th>
+                            <th className="py-2.5 px-4 text-right">Flags</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-xs">
+                          {validationSummary.factoryCoverage.map((fc) => (
+                            <tr
+                              key={fc.company}
+                              onClick={() =>
+                                setSelectedCompany((prev) =>
+                                  prev === fc.company ? 'ALL' : fc.company
+                                )
+                              }
+                              className={`cursor-pointer transition-colors ${
+                                selectedCompany === fc.company
+                                  ? 'bg-teal-50/70'
+                                  : 'hover:bg-slate-50/70'
+                              }`}
+                            >
+                              <td className="py-2.5 px-4 font-semibold text-slate-900 whitespace-nowrap">
+                                {fc.company}
+                              </td>
+                              <td className="py-2.5 px-4 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                                {fc.loggedDays}/{fc.expectedDays} ({formatNumber(fc.coveragePct, 0)}%)
+                              </td>
+                              <td className="py-2.5 px-4 text-right tabular-nums font-medium whitespace-nowrap">
+                                <span
+                                  className={
+                                    fc.hoursCompletenessPct >= 90
+                                      ? 'text-emerald-700'
+                                      : fc.hoursCompletenessPct >= 60
+                                      ? 'text-amber-700'
+                                      : 'text-rose-700'
+                                  }
+                                >
+                                  {formatNumber(fc.hoursCompletenessPct, 0)}%
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-4 text-right tabular-nums font-semibold whitespace-nowrap">
+                                {fc.issueCount > 0 ? (
+                                  <span className="text-amber-700">{fc.issueCount}</span>
+                                ) : (
+                                  <span className="text-emerald-700">0</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Top Validation Exceptions */}
+                    <div className="lg:col-span-7 overflow-y-auto max-h-[340px]">
+                      {validationSummary.issues.length === 0 ? (
+                        <div className="h-full min-h-[180px] flex flex-col items-center justify-center p-6 text-center space-y-2">
+                          <CheckCircle2 className="w-7 h-7 text-emerald-600" />
+                          <div className="text-sm font-semibold text-slate-900">
+                            Zero Exceptions Detected
+                          </div>
+                          <p className="text-xs text-slate-500 max-w-sm">
+                            All meter readings, tariffs, and runtime hours in this window match historical operating baselines.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-100">
+                          {validationSummary.issues.slice(0, 25).map((iss) => (
+                            <div
+                              key={iss.id}
+                              className="px-4 py-3 flex items-start justify-between gap-3 hover:bg-slate-50/70 transition-colors"
+                            >
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="flex flex-wrap items-center gap-2 text-xs">
+                                  <span
+                                    className={`font-semibold ${
+                                      iss.severity === 'critical'
+                                        ? 'text-rose-700'
+                                        : 'text-amber-700'
+                                    }`}
+                                  >
+                                    {iss.title}
+                                  </span>
+                                  <span className="text-slate-300" aria-hidden="true">·</span>
+                                  <span className="font-medium text-slate-900">
+                                    {iss.company}
+                                  </span>
+                                  <span className="text-slate-300" aria-hidden="true">·</span>
+                                  <span className="text-slate-600">{iss.assetName}</span>
+                                </div>
+                                <div className="text-xs text-slate-500">
+                                  {iss.detail}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0 text-xs tabular-nums">
+                                <div className="font-medium text-slate-700">
+                                  {formatShortDate(iss.date)}
+                                </div>
+                                {iss.bdtImpact !== undefined && iss.bdtImpact > 0 && (
+                                  <div className="text-[11px] font-semibold text-rose-700">
+                                    +{formatCurrency(iss.bdtImpact)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Detailed Ledger with Validation Filters */}
+                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                  <div className="p-5 sm:p-6 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div className="space-y-2">
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900">
+                          Detailed Audit Ledger
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                          {formatNumber(tableRows.length, 0)} matching records
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
+                        {(
+                          [
+                            ['all', `All (${filteredEntries.length})`],
+                            [
+                              'exceptions',
+                              `Exceptions (${filteredEntries.filter((e) => (validationSummary.entryIssuesMap.get(e.id)?.length || 0) > 0).length})`,
+                            ],
+                            ['rate_outlier', `Rate Spikes (${validationSummary.rateOutlierCount})`],
+                            ['missing_hours', `Missing Hrs (${validationSummary.missingHoursCount})`],
+                            ['zero_cost', `Zero Cost (${validationSummary.zeroCostCount})`],
+                          ] as [AuditLedgerFilter, string][]
+                        ).map(([key, label]) => {
+                          const isSelected = auditFilter === key;
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => setAuditFilter(key)}
+                              className={`relative px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                                isSelected
+                                  ? 'text-slate-900 font-semibold'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {isSelected && (
+                                <motion.span
+                                  layoutId="dashAuditFilterPill"
+                                  transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                                  className="absolute inset-0 bg-white rounded-md shadow-sm"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="relative z-10">{label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="relative w-full lg:w-72">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        placeholder="Search factory, utility, or note..."
+                        className="w-full pl-9 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-600"
+                      />
+                      {searchTerm && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchTerm('')}
+                          aria-label="Clear search"
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {tableRows.length === 0 ? (
+                    <div className="p-10 text-center text-sm text-slate-500">
+                      No records match your current search or audit filter.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+                              <th className="py-3 px-4">Date</th>
+                              <th className="py-3 px-4">Factory</th>
+                              <th className="py-3 px-4">Utility</th>
+                              <th className="py-3 px-4 text-right">Consumption</th>
+                              <th className="py-3 px-4 text-right">Run Hrs</th>
+                              <th className="py-3 px-4 text-right">Rate/Hr</th>
+                              <th className="py-3 px-4 text-right">Cost</th>
+                              <th className="py-3 px-4 text-right">Unit Cost</th>
+                              <th className="py-3 px-4">Validation</th>
+                              <th className="py-3 px-4">Note</th>
+                              <th className="py-3 px-4">Entered By</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200 text-sm">
+                            {tableRows.slice(0, tableLimit).map((row) => {
+                              const meta = utilityMap.get(row.utilityId);
+                              const unitLabel = meta?.unit || row.unit;
+                              const rowHrs = Number(row.operatingHours) || 0;
+                              const rowHourlyRate =
+                                rowHrs > 0 && row.consumption > 0
+                                  ? row.consumption / rowHrs
+                                  : null;
+                              const unitCost =
+                                row.consumption > 0
+                                  ? row.cost / row.consumption
+                                  : null;
+                              const periodAvg = utilityAvgUnitCostMap.get(
+                                row.utilityId
+                              );
+                              const rowIssues =
+                                validationSummary.entryIssuesMap.get(row.id) || [];
+                              const hasCritical = rowIssues.some(
+                                (i) => i.severity === 'critical'
+                              );
+                              const isHighRate =
+                                (unitCost !== null &&
+                                  periodAvg !== undefined &&
+                                  periodAvg > 0 &&
+                                  unitCost > periodAvg * 1.15) ||
+                                rowIssues.some((i) => i.category === 'rate_outlier');
+
+                              return (
+                                <tr key={row.id} className="hover:bg-slate-50/70">
+                                  <td className="py-2.5 px-4 whitespace-nowrap text-slate-700 tabular-nums">
+                                    {formatDate(row.date)}
+                                  </td>
+                                  <td className="py-2.5 px-4 font-medium text-slate-900 whitespace-nowrap">
+                                    {row.company}
+                                  </td>
+                                  <td className="py-2.5 px-4 whitespace-nowrap">
+                                    <span className="inline-flex items-center gap-2 text-slate-800">
+                                      <span
+                                        className="w-2.5 h-2.5 rounded-sm shrink-0"
+                                        style={{
+                                          backgroundColor: meta?.color || '#64748B',
+                                        }}
+                                      />
+                                      {meta?.name || row.utilityName}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums text-slate-800 whitespace-nowrap">
+                                    {formatNumber(row.consumption)} {unitLabel}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums text-slate-600 whitespace-nowrap">
+                                    {rowHrs > 0 ? `${formatNumber(rowHrs, 1)} hr` : '—'}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums font-medium text-slate-700 whitespace-nowrap">
+                                    {rowHourlyRate !== null
+                                      ? `${formatNumber(rowHourlyRate, 2)} ${unitLabel}/hr`
+                                      : '—'}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                                    {formatCurrency(row.cost)}
+                                  </td>
+                                  <td
+                                    className={`py-2.5 px-4 text-right tabular-nums font-medium whitespace-nowrap ${
+                                      isHighRate
+                                        ? 'text-amber-700 font-semibold'
+                                        : 'text-teal-800'
+                                    }`}
+                                    title={
+                                      isHighRate && periodAvg
+                                        ? `Above baseline (period avg ৳${formatNumber(
+                                            periodAvg,
+                                            2
+                                          )}/${unitLabel})`
+                                        : undefined
+                                    }
+                                  >
+                                    {unitCost !== null
+                                      ? `৳ ${formatNumber(unitCost, 2)}/${unitLabel}`
+                                      : '—'}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-xs whitespace-nowrap">
+                                    {rowIssues.length === 0 ? (
+                                      <span className="text-emerald-700 font-medium">
+                                        Verified
+                                      </span>
+                                    ) : (
+                                      <span
+                                        title={rowIssues.map((i) => i.detail).join(' | ')}
+                                        className={`font-semibold ${
+                                          hasCritical ? 'text-rose-700' : 'text-amber-700'
+                                        }`}
+                                      >
+                                        {rowIssues.map((i) => i.title).join(' · ')}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-xs text-slate-600 max-w-xs truncate">
+                                    {row.note || '—'}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-xs text-slate-500 whitespace-nowrap">
+                                    {row.enteredByName}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {tableRows.length > tableLimit && (
+                        <div className="p-4 border-t border-slate-200 text-center">
+                          <button
+                            type="button"
+                            onClick={() => setTableLimit((prev) => prev + 25)}
+                            className="px-4 py-2 text-xs font-semibold text-teal-700 hover:bg-teal-50 rounded-lg transition-colors cursor-pointer"
+                          >
+                            Show More (
+                            {formatNumber(tableRows.length - tableLimit, 0)}{' '}
+                            remaining)
+                          </button>
+                        </div>
+                      )}
+                    </>
                   )}
-                </>
-              )}
-            </div>
+                </div>
+              </motion.div>
+            )}
           </>
         )}
 
@@ -5896,7 +7590,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
             open={syncModalOpen}
             spreadsheetTitle={sheetsConfig.spreadsheetTitle}
             sheetName={sheetsConfig.sheetName}
-            recordCount={entries.length}
+            recordCount={entries.length + generationEntries.length}
             syncing={syncingSheets}
             onConfirm={() => void handleConfirmSyncSheets()}
             onCancel={() => setSyncModalOpen(false)}

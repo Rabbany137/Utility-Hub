@@ -11,7 +11,7 @@ import {
   updatePassword,
   type User,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import { doc, getDocFromServer, initializeFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -20,13 +20,34 @@ const firestoreDatabaseId = (
 ).firestoreDatabaseId;
 
 export const db = firestoreDatabaseId
-  ? getFirestore(app, firestoreDatabaseId)
-  : getFirestore(app);
+  ? initializeFirestore(
+      app,
+      { experimentalAutoDetectLongPolling: true },
+      firestoreDatabaseId
+    )
+  : initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
 export const auth = getAuth(app);
+
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes('the client is offline')
+    ) {
+      console.error('Please check your Firebase configuration.');
+    }
+  }
+}
+void testConnection();
 
 export const GOOGLE_SHEETS_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/gmail.send',
 ];
+
+export const GOOGLE_WORKSPACE_SCOPES = GOOGLE_SHEETS_SCOPES;
 
 const authGoogleProvider = new GoogleAuthProvider();
 authGoogleProvider.setCustomParameters({
@@ -116,6 +137,45 @@ export async function linkPasswordToCurrentUser(newPassword: string): Promise<vo
     await linkWithCredential(current, credential);
   }
   await current.reload();
+  if (!current.emailVerified && hasGoogleProvider(current)) {
+    await reauthenticateWithPopup(current, authGoogleProvider);
+    await current.reload();
+  }
+  await current.getIdToken(true);
+}
+
+export async function verifyCurrentAccountWithGoogle(): Promise<boolean> {
+  const current = auth.currentUser;
+  if (!current) {
+    const user = await signInWithGoogleAccount();
+    await user.getIdToken(true);
+    return Boolean(user.emailVerified);
+  }
+
+  if (hasGoogleProvider(current)) {
+    await reauthenticateWithPopup(current, authGoogleProvider);
+  } else {
+    try {
+      await linkWithPopup(current, authGoogleProvider);
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (
+        code === 'auth/credential-already-in-use' ||
+        code === 'auth/provider-already-linked' ||
+        code === 'auth/email-already-in-use'
+      ) {
+        await signInWithPopup(auth, authGoogleProvider);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const latest = auth.currentUser;
+  if (!latest) return false;
+  await latest.reload();
+  await latest.getIdToken(true);
+  return Boolean(latest.emailVerified);
 }
 
 export async function signInWithGoogleAccount(): Promise<User> {
@@ -130,7 +190,7 @@ export async function signInWithGoogleSheets(): Promise<{
   const result = await signInWithPopup(auth, googleProvider);
   const credential = GoogleAuthProvider.credentialFromResult(result);
   if (!credential?.accessToken) {
-    throw new Error('Failed to retrieve Google Sheets access token.');
+    throw new Error('Failed to retrieve Google Workspace access token.');
   }
   cachedGoogleAccessToken = credential.accessToken;
   return { user: result.user, accessToken: credential.accessToken };
@@ -151,7 +211,7 @@ export async function authorizeGoogleSheetsForCurrentUser(): Promise<string> {
     const result = await reauthenticateWithPopup(current, googleProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('Failed to refresh Google Sheets access token.');
+      throw new Error('Failed to refresh Google Workspace access token.');
     }
     cachedGoogleAccessToken = credential.accessToken;
     return credential.accessToken;
@@ -161,7 +221,7 @@ export async function authorizeGoogleSheetsForCurrentUser(): Promise<string> {
     const result = await linkWithPopup(current, googleProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('Failed to obtain Google Sheets access token.');
+      throw new Error('Failed to obtain Google Workspace access token.');
     }
     cachedGoogleAccessToken = credential.accessToken;
     return credential.accessToken;
@@ -175,7 +235,7 @@ export async function authorizeGoogleSheetsForCurrentUser(): Promise<string> {
       const result = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (!credential?.accessToken) {
-        throw new Error('Failed to obtain Google Sheets access token.');
+        throw new Error('Failed to obtain Google Workspace access token.');
       }
       cachedGoogleAccessToken = credential.accessToken;
       return credential.accessToken;
@@ -235,15 +295,3 @@ export function handleFirestoreError(
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
-
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-
-void testConnection();

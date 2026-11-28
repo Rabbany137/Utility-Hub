@@ -1,11 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import {
+  ArrowLeftRight,
   BarChart3,
   ClipboardPlus,
+  FileSpreadsheet,
+  FileText,
   Home,
   LogOut,
   Menu,
+  RefreshCw,
   ShieldCheck,
+  TrendingUp,
   UserCircle,
   X,
 } from 'lucide-react';
@@ -19,6 +25,8 @@ import {
 import { DailyEntryPage } from './components/DailyEntryPage';
 import { DashboardPage } from './components/DashboardPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ForecastBudgetPage } from './components/ForecastBudgetPage';
+import { ReportsPage } from './components/ReportsPage';
 import { UserProfilePage } from './components/UserProfilePage';
 import { APP_NAME } from './config';
 import { AppProvider, useApp } from './context/AppContext';
@@ -33,31 +41,45 @@ const ROLE_DISPLAY: Record<UserRole, string> = {
 
 const PAGE_TITLES: Record<ActivePage, { title: string; subtitle: string }> = {
   dashboard: {
-    title: 'Dashboard & Analytics',
-    subtitle: 'Overview of utility consumption and cost across all companies',
+    title: 'Energy Intelligence & Operations',
+    subtitle: 'Consumption, hourly intensity, tariff efficiency, and multi-factory spend benchmarking',
   },
   entry: {
     title: 'Daily Data Entry',
-    subtitle: 'Record and update daily utility readings and costs',
+    subtitle: 'Record daily utility meters, equipment operating hours, captive power, and boiler steam',
+  },
+  reports: {
+    title: 'Auto Summary Reports & Email',
+    subtitle: 'Executive operational briefs, audit coverage, print exports, and daily mail preview',
+  },
+  forecast: {
+    title: 'Budgets, Carbon & Forecast',
+    subtitle: 'Month-end spend projections, factory budget variance, carbon footprint, and scenario simulation',
   },
   profile: {
     title: 'User Profile & Organization',
-    subtitle: 'Manage your profile details, organization identity, and directory',
+    subtitle: 'Manage your profile details, organization identity, and facility directory',
   },
   admin: {
-    title: 'User Management',
-    subtitle: 'Manage user approvals, roles, companies, and utility types',
+    title: 'Administration & Setup',
+    subtitle: 'Manage user permissions, daily push mails, factory assets, utility meters, and Sheets',
   },
 };
 
 function WorkspaceShell() {
   const {
     user,
+    emailVerified,
     authReady,
     profile,
     profileLoading,
     profileError,
     allUsers,
+    sheetsConfig,
+    googleAccessToken,
+    autoSyncState,
+    connectGoogleSheets,
+    runTwoWaySyncNow,
     logout,
     retryProfileLoad,
   } = useApp();
@@ -80,6 +102,16 @@ function WorkspaceShell() {
         icon: <ClipboardPlus className="w-4 h-4 shrink-0" />,
       });
     }
+    items.push({
+      id: 'reports',
+      label: 'Reports & Mail',
+      icon: <FileText className="w-4 h-4 shrink-0" />,
+    });
+    items.push({
+      id: 'forecast',
+      label: 'Budget & Forecast',
+      icon: <TrendingUp className="w-4 h-4 shrink-0" />,
+    });
     items.push({
       id: 'profile',
       label: 'User Profile',
@@ -126,7 +158,7 @@ function WorkspaceShell() {
     return <AuthLoginScreen />;
   }
 
-  if (!user.emailVerified) {
+  if (!emailVerified) {
     return <VerifyEmailScreen />;
   }
 
@@ -150,7 +182,7 @@ function WorkspaceShell() {
             <div>
               Open{' '}
               <a
-                href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId || '-default-'}/rules`}
+                href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${(firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || '-default-'}/rules`}
                 target="_blank"
                 rel="noreferrer"
                 className="text-teal-700 font-medium underline"
@@ -159,7 +191,7 @@ function WorkspaceShell() {
               </a>{' '}
               for database{' '}
               <span className="font-mono-num font-semibold text-slate-900">
-                {firebaseConfig.firestoreDatabaseId || '(default)'}
+                {(firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || '(default)'}
               </span>{' '}
               and publish <span className="font-mono-num">firestore.rules</span>.
             </div>
@@ -219,18 +251,26 @@ function WorkspaceShell() {
                 key={item.id}
                 type="button"
                 onClick={() => setActivePage(item.id)}
-                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                className={`relative w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
                   isActive
-                    ? 'bg-teal-50 text-teal-800 font-semibold'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                    ? 'text-teal-900 font-semibold'
+                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
                 }`}
               >
-                <span className="inline-flex items-center gap-2.5 truncate">
+                {isActive && (
+                  <motion.span
+                    layoutId="sidebarActiveNav"
+                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                    className="absolute inset-0 bg-teal-50 border border-teal-200/80 rounded-lg"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="relative z-10 inline-flex items-center gap-2.5 truncate">
                   {item.icon}
                   <span className="truncate">{item.label}</span>
                 </span>
                 {item.badge !== undefined && (
-                  <span className="text-xs font-bold text-amber-700 tabular-nums">
+                  <span className="relative z-10 text-xs font-bold text-amber-700 tabular-nums">
                     {item.badge}
                   </span>
                 )}
@@ -271,13 +311,24 @@ function WorkspaceShell() {
       </aside>
 
       {/* Mobile Drawer */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
-          <div
-            className="fixed inset-0 bg-slate-900/40"
-            onClick={() => setMobileMenuOpen(false)}
-          />
-          <aside className="fixed inset-y-0 left-0 w-72 bg-white border-r border-slate-200 flex flex-col z-10">
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              className="fixed inset-0 bg-slate-900/40"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+            <motion.aside
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="fixed inset-y-0 left-0 w-72 bg-white border-r border-slate-200 flex flex-col z-10"
+            >
             <div className="h-14 px-4 flex items-center justify-between border-b border-slate-200">
               <button
                 type="button"
@@ -358,14 +409,15 @@ function WorkspaceShell() {
                 Sign Out
               </button>
             </div>
-          </aside>
-        </div>
-      )}
+            </motion.aside>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Main Content Area */}
       <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
-        {/* Top Bar */}
-        <header className="sticky top-0 z-30 h-14 lg:h-16 bg-white/95 backdrop-blur border-b border-slate-200 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3">
+        {/* Crisp 3-Zone Top Bar */}
+        <header className="sticky top-0 z-30 h-14 lg:h-16 bg-white/95 backdrop-blur border-b border-slate-200 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
@@ -379,18 +431,14 @@ function WorkspaceShell() {
               type="button"
               onClick={handleGoHome}
               title="Back to Utility Hub Home"
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold tracking-tight transition-colors whitespace-nowrap shrink-0 cursor-pointer border ${
-                activePage === 'dashboard'
-                  ? 'bg-slate-100 text-slate-900 border-slate-200 hover:bg-slate-200'
-                  : 'bg-teal-50 text-teal-800 border-teal-200 hover:bg-teal-100'
-              }`}
+              className="lg:hidden inline-flex items-center gap-1.5 text-sm font-bold tracking-tight text-slate-900 hover:text-teal-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Home className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+              <Home className="w-4 h-4 text-teal-700 shrink-0" />
               <span>{APP_NAME}</span>
             </button>
-            <div className="hidden sm:block h-5 w-px bg-slate-200 shrink-0" aria-hidden="true" />
+            <div className="lg:hidden h-4 w-px bg-slate-200 shrink-0" aria-hidden="true" />
             <div className="min-w-0">
-              <h1 className="text-sm sm:text-base lg:text-lg font-bold text-slate-900 truncate">
+              <h1 className="text-sm sm:text-base lg:text-lg font-bold text-slate-900 tracking-tight truncate">
                 {pageMeta.title}
               </h1>
               <p className="hidden md:block text-xs text-slate-500 truncate">
@@ -399,7 +447,81 @@ function WorkspaceShell() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
+            {profile.role === 'admin' && sheetsConfig && (() => {
+              const needsOAuth =
+                sheetsConfig.syncMode !== 'appsScript' && !googleAccessToken;
+              const isPaused = sheetsConfig.autoSyncEnabled === false;
+              const isSyncing = autoSyncState.status === 'syncing';
+              const isError = autoSyncState.status === 'error';
+
+              if (needsOAuth && !isPaused) {
+                return (
+                  <button
+                    type="button"
+                    onClick={() => void connectGoogleSheets().catch(() => {})}
+                    title={autoSyncState.lastResultText || 'Authorize Google Sheets for automatic two-way sync'}
+                    className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold rounded-lg hover:bg-amber-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    Reconnect Sheets
+                  </button>
+                );
+              }
+
+              return (
+                <button
+                  type="button"
+                  disabled={isSyncing}
+                  onClick={() => {
+                    if (isPaused) {
+                      setActivePage('admin');
+                    } else {
+                      void runTwoWaySyncNow({ forceDirection: 'bidirectional' }).catch(
+                        () => {}
+                      );
+                    }
+                  }}
+                  title={
+                    autoSyncState.lastResultText ||
+                    sheetsConfig.lastSyncSummary ||
+                    'Run two-way Google Sheets sync'
+                  }
+                  className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-70 ${
+                    isError
+                      ? 'bg-rose-50 border-rose-200 text-rose-800 hover:bg-rose-100'
+                      : isPaused
+                      ? 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      : 'bg-emerald-50/80 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
+                  }`}
+                >
+                  {isSyncing ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ArrowLeftRight className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {isSyncing
+                      ? 'Syncing Sheets...'
+                      : isError
+                      ? 'Retry Sheets Sync'
+                      : isPaused
+                      ? 'Sheets Sync Paused'
+                      : 'Sheets Auto-Sync'}
+                  </span>
+                </button>
+              );
+            })()}
+
+            <div className="hidden xl:flex items-center gap-2 text-xs text-slate-500">
+              {profile.organization && (
+                <>
+                  <span className="font-semibold text-slate-800">{profile.organization}</span>
+                  <span className="text-slate-300" aria-hidden="true">·</span>
+                </>
+              )}
+              <span>{ROLE_DISPLAY[profile.role]}</span>
+            </div>
             {activePage !== 'entry' && canEnter && (
               <button
                 type="button"
@@ -414,12 +536,28 @@ function WorkspaceShell() {
         </header>
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1400px] w-full mx-auto">
-          {activePage === 'dashboard' && (
-            <DashboardPage onNavigate={setActivePage} />
-          )}
-          {activePage === 'entry' && canEnter && <DailyEntryPage />}
-          {activePage === 'profile' && <UserProfilePage />}
-          {activePage === 'admin' && profile.role === 'admin' && <AdminPage />}
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={activePage}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {activePage === 'dashboard' && (
+                <DashboardPage onNavigate={setActivePage} />
+              )}
+              {activePage === 'entry' && canEnter && <DailyEntryPage />}
+              {activePage === 'reports' && <ReportsPage onNavigate={setActivePage} />}
+              {activePage === 'forecast' && (
+                <ForecastBudgetPage onNavigate={setActivePage} />
+              )}
+              {activePage === 'profile' && <UserProfilePage />}
+              {activePage === 'admin' && profile.role === 'admin' && (
+                <AdminPage onNavigate={setActivePage} />
+              )}
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
     </div>
@@ -429,9 +567,11 @@ function WorkspaceShell() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <AppProvider>
-        <WorkspaceShell />
-      </AppProvider>
+      <MotionConfig reducedMotion="user">
+        <AppProvider>
+          <WorkspaceShell />
+        </AppProvider>
+      </MotionConfig>
     </ErrorBoundary>
   );
 }
